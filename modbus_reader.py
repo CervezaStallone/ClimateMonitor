@@ -50,17 +50,29 @@ PARITY_MAP = {
     'O': minimalmodbus.serial.PARITY_ODD
 }
 
-instrument = minimalmodbus.Instrument(MODBUS_PORT, MODBUS_SLAVE_ID)
-instrument.serial.baudrate = MODBUS_BAUDRATE
-instrument.serial.bytesize = MODBUS_BYTESIZE
-instrument.serial.parity = PARITY_MAP.get(MODBUS_PARITY, minimalmodbus.serial.PARITY_NONE)
-instrument.serial.stopbits = MODBUS_STOPBITS
-instrument.serial.timeout = MODBUS_TIMEOUT
+# Global instrument variable - initialized lazily to avoid serial port access during import
+instrument = None
+
+
+def _initialize_instrument():
+    """Initialize Modbus instrument - called only when needed, not during module import"""
+    global instrument
+    if instrument is None:
+        instrument = minimalmodbus.Instrument(MODBUS_PORT, MODBUS_SLAVE_ID)
+        instrument.serial.baudrate = MODBUS_BAUDRATE
+        instrument.serial.bytesize = MODBUS_BYTESIZE
+        instrument.serial.parity = PARITY_MAP.get(MODBUS_PARITY, minimalmodbus.serial.PARITY_NONE)
+        instrument.serial.stopbits = MODBUS_STOPBITS
+        instrument.serial.timeout = MODBUS_TIMEOUT
+    return instrument
 
 
 def read_modbus_data():
     """Thread functie om Modbus data te lezen en op te slaan"""
     print(f"→ Modbus thread actief - verbinding maken met {MODBUS_PORT}...")
+    
+    # Initialize instrument now (not during import)
+    _initialize_instrument()
     
     last_cleanup = datetime.now()
     current_table = get_table_name()

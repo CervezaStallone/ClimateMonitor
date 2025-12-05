@@ -15,6 +15,9 @@ on:
       - 'callbacks.py'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   validate:
     name: Validate Translations
