@@ -60,10 +60,10 @@ jobs:
         python -c "import database; import psychrometric; import callbacks; import layout; import translations"
         echo "✓ All modules import successfully (skipping app.py and modbus_reader.py in CI)"
     
-    - name: Validate env.example
+    - name: Validate .env.example
       run: |
-        if [ ! -f env.example ]; then
-          echo "Error: env.example not found"
+        if [ ! -f .env.example ]; then
+          echo "Error: .env.example not found"
           exit 1
         fi
-        echo "env.example exists and is valid"
+        echo ".env.example exists and is valid"
