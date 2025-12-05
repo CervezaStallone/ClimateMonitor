@@ -56,14 +56,14 @@ jobs:
       run: |
         echo "Checking dependency consistency..."
         pip install toml
-        python -c "
-import toml
-with open('pyproject.toml', 'r') as f:
-    config = toml.load(f)
-    deps = config['project']['dependencies']
-    print('Dependencies in pyproject.toml:')
-    for dep in sorted(deps):
-        print(f'  - {dep}')
-"
+        python << 'EOF'
+        import toml
+        with open('pyproject.toml', 'r') as f:
+            config = toml.load(f)
+            deps = config['project']['dependencies']
+            print('Dependencies in pyproject.toml:')
+            for dep in sorted(deps):
+                print(f'  - {dep}')
+        EOF
         echo "Requirements.txt entries:"
         grep -E '^[a-zA-Z]' requirements.txt | sort || echo "requirements.txt is empty"
