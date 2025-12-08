@@ -18,19 +18,26 @@ if DATA_RETENTION_DAYS > 0:
 modbus_thread = start_modbus_thread()
 
 # Dash app initialisatie
+print("→ Initialiseren Dash applicatie...")
 app = Dash(__name__, title="XY-MD02 Temperature & Humidity Monitor")
 server = app.server
 app.index_string = HTML_TEMPLATE
+print("✓ Dash applicatie geïnitialiseerd")
 
 # Layout instellen
+print("→ Layout configureren...")
 app.layout = create_layout()
+print("✓ Layout geconfigureerd")
 
 # Callbacks registreren
+print("→ Callbacks registreren...")
 register_callbacks(app)
+print("✓ Callbacks geregistreerd")
 
 # Main entry point
 if __name__ == '__main__':
     print("\n=== Server wordt gestart ===")
+    print("→ Dash server starten op 0.0.0.0:8050...")
     print("Open browser op: http://127.0.0.1:8050")
     print("Druk CTRL+C om te stoppen\n")
     
