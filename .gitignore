@@ -49,6 +49,9 @@ Thumbs.db
 # Jupyter Notebook
 .ipynb_checkpoints
 
+# Test scripts and debug tools (local only)
+tests/
+
 # pytest
 .pytest_cache/
 .coverage
