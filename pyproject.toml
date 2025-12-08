@@ -33,7 +33,7 @@ dependencies = [
     "dash==2.18.2",
     "plotly==5.24.1",
     "pandas==2.3.3",
-    "numpy==2.2.1",
+    "numpy==2.2.6",
     "minimalmodbus==2.1.1",
     "python-dotenv==1.2.1",
     "pyserial==3.5",
