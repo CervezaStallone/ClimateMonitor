@@ -1,10 +1,15 @@
 ﻿from dash import Dash
+from waitress import serve
+import logging
 
 # Import modules
 from database import init_database, cleanup_old_data, DATA_RETENTION_DAYS
 from modbus_reader import start_modbus_thread
 from layout import create_layout, HTML_TEMPLATE
 from callbacks import register_callbacks
+
+# Zet Waitress logging op ERROR niveau (onderdruk warnings)
+logging.getLogger('waitress').setLevel(logging.ERROR)
 
 # Initialiseer database
 print("=== XY-MD02 WebApp Startup ===")
@@ -37,11 +42,21 @@ print("✓ Callbacks geregistreerd")
 # Main entry point
 if __name__ == '__main__':
     print("\n=== Server wordt gestart ===")
-    print("→ Dash server starten op 0.0.0.0:8050...")
-    print("Open browser op: http://127.0.0.1:8050")
+    print("→ Waitress WSGI server starten op 0.0.0.0:8050...")
+    print("✓ Server actief - Open browser op: http://127.0.0.1:8050")
     print("Druk CTRL+C om te stoppen\n")
     
     try:
-        app.run(debug=False, host='0.0.0.0', port=8050)
+        # Gebruik Waitress production server (cross-platform)
+        # Verhoog threads en channel_timeout voor Dash's frequente callbacks
+        serve(
+            server, 
+            host='0.0.0.0', 
+            port=8050, 
+            threads=8,                    # Meer threads voor concurrent requests
+            channel_timeout=60,           # Timeout voor idle connections
+            cleanup_interval=10,          # Cleanup interval voor oude connections
+            asyncore_use_poll=True        # Betere performance op Windows
+        )
     except KeyboardInterrupt:
         print("\n\n=== Server gestopt ===")

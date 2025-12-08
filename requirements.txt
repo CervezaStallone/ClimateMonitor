@@ -31,5 +31,6 @@ tenacity==9.1.2
 typing_extensions==4.15.0
 tzdata==2025.2
 urllib3==2.6.0
+waitress==3.0.2
 Werkzeug==3.1.4
 zipp==3.23.0
