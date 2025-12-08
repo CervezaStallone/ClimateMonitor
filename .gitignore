@@ -52,6 +52,9 @@ Thumbs.db
 # Test scripts and debug tools (local only)
 tests/
 
+# Local launcher scripts
+startApp.ps1
+
 # pytest
 .pytest_cache/
 .coverage
