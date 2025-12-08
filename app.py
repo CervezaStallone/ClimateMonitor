@@ -35,6 +35,6 @@ if __name__ == '__main__':
     print("Druk CTRL+C om te stoppen\n")
     
     try:
-        app.run_server(debug=False, host='0.0.0.0', port=8050)
+        app.run(debug=False, host='0.0.0.0', port=8050)
     except KeyboardInterrupt:
         print("\n\n=== Server gestopt ===")
