@@ -15,6 +15,7 @@ from psychrometric import create_psychrometric_chart, create_psychrometric_chart
 # Laad environment variabelen
 load_dotenv()
 TIMEZONE = os.getenv('TIMEZONE', 'Europe/Amsterdam')
+DEBUG_LOGGING = os.getenv('DEBUG_LOGGING', 'False').lower() == 'true'
 
 
 def register_callbacks(app):
@@ -178,16 +179,26 @@ def register_callbacks(app):
         if time_range_minutes == -1:
             # Alle data
             query, table_count = build_union_query(cursor, columns)
+            if DEBUG_LOGGING:
+                print(f"📊 Query voor ALLE data - aantal tabellen: {table_count}")
         else:
             # Filter op tijdsbereik
             cutoff_time = datetime.now() - timedelta(minutes=time_range_minutes)
             cutoff_timestamp = int(cutoff_time.timestamp())
+            if DEBUG_LOGGING:
+                print(f"📊 Query voor laatste {time_range_minutes} minuten (vanaf {cutoff_time.strftime('%Y-%m-%d %H:%M:%S')})")
             query, table_count = build_union_query(cursor, columns, start_timestamp=cutoff_timestamp)
+            if DEBUG_LOGGING:
+                print(f"   → Aantal relevante tabellen: {table_count}")
         
         if query:
             df = pd.read_sql_query(query, conn)
+            if DEBUG_LOGGING:
+                print(f"   → Opgehaalde datapunten: {len(df)}")
         else:
             df = pd.DataFrame(columns=columns)
+            if DEBUG_LOGGING:
+                print("   ⚠️ Geen query gegenereerd (geen relevante tabellen)")
         
         conn.close()
         

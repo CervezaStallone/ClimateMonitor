@@ -9,6 +9,7 @@ load_dotenv()
 # Database configuratie
 DB_FILE = os.getenv('DATABASE_FILE', 'src/modbus_sensor_data.db')
 DATA_RETENTION_DAYS = int(os.getenv('DATA_RETENTION_DAYS', '0'))  # 0 = oneindig, anders aantal dagen
+DEBUG_LOGGING = os.getenv('DEBUG_LOGGING', 'False').lower() == 'true'
 
 if DATA_RETENTION_DAYS < 0:
     print(f"Waarschuwing: DATA_RETENTION_DAYS kan niet negatief zijn ({DATA_RETENTION_DAYS}), gebruik 0 voor oneindig")
@@ -76,7 +77,16 @@ def build_union_query(cursor, columns, start_timestamp=None, end_timestamp=None,
     tables = get_tables_for_timerange(cursor, start_timestamp, end_timestamp)
     
     if not tables:
+        if DEBUG_LOGGING:
+            print("⚠️ build_union_query: Geen tabellen gevonden voor tijdsbereik")
         return None, None
+    
+    if DEBUG_LOGGING:
+        print(f"🔍 build_union_query: Relevante tabellen: {tables}")
+        if start_timestamp:
+            print(f"   → Start timestamp: {start_timestamp} ({datetime.fromtimestamp(start_timestamp)})")
+        if end_timestamp:
+            print(f"   → End timestamp: {end_timestamp} ({datetime.fromtimestamp(end_timestamp)})")
     
     # Bouw SELECT queries voor elke tabel
     column_list = ', '.join(columns)
