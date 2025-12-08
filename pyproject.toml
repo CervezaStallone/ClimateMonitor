@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xy-md02-webapp"
-version = "1.6.0"
+version = "1.6.1"
 description = "Web-based monitoring dashboard for XY-MD02 Modbus temperature and humidity sensor"
 readme = "README.md"
 requires-python = ">=3.10"
