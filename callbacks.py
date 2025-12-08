@@ -212,6 +212,43 @@ def register_callbacks(app):
         # Converteer integer timestamps naar datetime objecten (lokale tijd)
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s').dt.tz_localize('UTC').dt.tz_convert(TIMEZONE).dt.tz_localize(None)
         
+        # Adaptive downsampling voor betere performance bij lange tijdsbereiken
+        # Houdt max ~1000-2000 punten voor snelle rendering
+        original_points = len(df)
+        if time_range_minutes > 60 or original_points > 5000:  # Meer dan 1 uur OF veel data
+            df = df.set_index('timestamp')
+            
+            if time_range_minutes == -1:  # Alle data: intelligente sampling
+                total_days = (df.index.max() - df.index.min()).total_seconds() / 86400
+                if total_days > 365:  # > 1 jaar: 1 dag gemiddelde
+                    df = df.resample('1D').mean()
+                elif total_days > 90:  # 3-12 maanden: 6 uur gemiddelde
+                    df = df.resample('6h').mean()
+                elif total_days > 30:  # 1-3 maanden: 2 uur gemiddelde
+                    df = df.resample('2h').mean()
+                else:  # < 1 maand: 1 uur gemiddelde
+                    df = df.resample('1h').mean()
+            elif time_range_minutes <= 360:  # 1-6 uur: 1 minuut
+                df = df.resample('1min').mean()
+            elif time_range_minutes <= 1440:  # 6-24 uur: 5 minuten
+                df = df.resample('5min').mean()
+            elif time_range_minutes <= 10080:  # 1-7 dagen: 15 minuten
+                df = df.resample('15min').mean()
+            elif time_range_minutes <= 43200:  # 1 maand: 1 uur
+                df = df.resample('1h').mean()
+            elif time_range_minutes <= 129600:  # 3 maanden: 3 uur
+                df = df.resample('3h').mean()
+            elif time_range_minutes <= 259200:  # 6 maanden: 6 uur
+                df = df.resample('6h').mean()
+            else:  # > 6 maanden: 1 dag
+                df = df.resample('1D').mean()
+            
+            df = df.dropna().reset_index()
+            
+            if DEBUG_LOGGING:
+                reduction = 100 * (1 - len(df)/original_points)
+                print(f"   → Downsampled: {original_points} → {len(df)} punten (-{reduction:.1f}%)")
+        
         df['timestamp_formatted'] = df['timestamp'].dt.strftime('%d-%m-%Y %H:%M:%S')
         
         # Haal laatste waarden op
@@ -229,7 +266,7 @@ def register_callbacks(app):
         fig = make_subplots(
             rows=4, cols=1,
             subplot_titles=(f'🌡️ {t["temperature"]}', f'💧 {t["humidity"]}', f'💦 {t["dewpoint"]}', f'🌫️ {t["abs_humidity"]}'),
-            vertical_spacing=0.06
+            vertical_spacing=0.10
         )
         
         fig.add_trace(
