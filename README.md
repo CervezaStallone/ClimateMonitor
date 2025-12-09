@@ -92,6 +92,11 @@ Adjust the settings in `.env`:
 MODBUS_PORT=COM11
 MODBUS_SLAVE_ID=1
 MODBUS_BAUDRATE=9600
+MODBUS_BYTESIZE=8
+MODBUS_PARITY=N
+MODBUS_STOPBITS=1
+MODBUS_TIMEOUT=1
+MODBUS_FUNCTION_CODE=4
 MODBUS_REGISTER_TEMP=1
 MODBUS_REGISTER_HUMIDITY=2
 
@@ -103,6 +108,9 @@ DATA_RETENTION_DAYS=0
 APP_HOST=127.0.0.1
 APP_PORT=8050
 APP_DEBUG=False
+DEBUG_LOGGING=False
+TIMEZONE=Europe/Amsterdam
+DEFAULT_LANGUAGE=EN
 ```
 
 6. **Start the application**
@@ -116,21 +124,21 @@ The application is now available at: `http://127.0.0.1:8050/`
 
 ```
 XY-MD02_WebApp/
-├── app.py                    # Main entry point (45 lines)
-├── database.py               # Database operations, partitioning, WAL mode
-├── modbus_reader.py          # Modbus RTU communication, batch buffering
-├── psychrometric.py          # Mollier diagram generation
-├── callbacks.py              # Dash callbacks (7 functions)
-├── layout.py                 # HTML layout and CSS styling
-├── translations.py           # Multilingual system (NL/EN)
-├── test_app.py               # Automated test suite (15 tests)
-├── .env                      # Configuration (not in git)
-├── .env.example              # Example configuration
-├── requirements.txt          # Python dependencies
-├── .gitignore               # Git exclude rules
-├── README.md                # This file
-└── src/                     # Data directory
-    └── modbus_sensor_data.db  # SQLite database (not in git)
+├── app.py                      # Main entry point (45 lines)
+├── database.py                 # Database operations, partitioning, WAL mode
+├── modbus_reader.py            # Modbus RTU communication, batch buffering
+├── psychrometric.py            # Mollier diagram generation
+├── callbacks.py                # Dash callbacks (7 functions)
+├── layout.py                   # HTML layout and CSS styling
+├── translations.py             # Multilingual system (NL/EN)
+├── test_app.py                 # Automated test suite (15 tests)
+├── .env                        # Configuration (not in git)
+├── .env.example                # Example configuration
+├── requirements.txt            # Python dependencies
+├── .gitignore                  # Git exclude rules
+├── README.md                   # This file
+└── src/                        # Data directory
+    └── modbus_sensor_data.db   # SQLite database (not in git)
 ```
 
 ### Configuration
@@ -156,8 +164,11 @@ XY-MD02_WebApp/
 #### Application Settings
 
 - `APP_HOST`: Server host IP (127.0.0.1 for local)
-- `APP_PORT`: Server poort (8050)
+- `APP_PORT`: Server port (8050)
 - `APP_DEBUG`: Debug mode (True/False)
+- `DEBUG_LOGGING`: Enable verbose debug logging to console (True/False, default: False)
+- `TIMEZONE`: Timezone for timestamp display (e.g., Europe/Amsterdam, America/New_York)
+- `DEFAULT_LANGUAGE`: Default UI language (EN, NL, DE, FR, ES, default: EN)
 
 ### Adding a New Language
 

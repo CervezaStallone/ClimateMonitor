@@ -81,6 +81,7 @@ def register_callbacks(app):
             {'label': t['last_30min'], 'value': 30},
             {'label': t['last_1hour'], 'value': 60},
             {'label': t['last_6hours'], 'value': 360},
+            {'label': t['last_12hours'], 'value': 720},
             {'label': t['last_24hours'], 'value': 1440},
             {'label': t['last_7days'], 'value': 10080},
             {'label': t['last_14days'], 'value': 20160},
@@ -262,11 +263,57 @@ def register_callbacks(app):
         else:
             latest_abs_humidity = (6.112 * math.exp((17.67 * latest_temp) / (latest_temp + 243.5)) * latest_humidity * 2.1674) / (273.15 + latest_temp)
         
+        # Bereken comfort score voor elk datapunt
+        comfort_debug_counter = [0]  # Mutable counter voor closure
+        
+        def calculate_comfort_score(temp, hum):
+            """Bereken comfort score op basis van Humidex"""
+            try:
+                # Check voor NaN waarden
+                if pd.isna(temp) or pd.isna(hum):
+                    return None
+                
+                dewpoint = temp - ((100 - hum) / 5.0)
+                dewpoint_kelvin = dewpoint + 273.15
+                e = 6.11 * math.exp(5417.7530 * ((1/273.16) - (1/dewpoint_kelvin)))
+                humidex = temp + 0.5555 * (e - 10)
+                
+                if humidex < 20:
+                    score = 0
+                elif humidex < 27:
+                    score = 4
+                elif humidex < 30:
+                    score = 5
+                elif humidex < 35:
+                    score = 6
+                elif humidex < 40:
+                    score = 3
+                elif humidex < 46:
+                    score = 2
+                elif humidex < 54:
+                    score = 1
+                else:
+                    score = 0
+                
+                # Debug output alleen voor eerste 5 punten
+                if DEBUG_LOGGING and comfort_debug_counter[0] < 5:
+                    print(f"   Debug comfort #{comfort_debug_counter[0]+1}: T={temp:.1f}°C, RH={hum:.1f}%, Humidex={humidex:.1f}, Score={score}")
+                    comfort_debug_counter[0] += 1
+                
+                return score
+            except Exception as e:
+                if DEBUG_LOGGING:
+                    print(f"   Error calculating comfort score: {e}")
+                return None
+        
+        # Bereken comfort scores voor alle datapunten
+        df['comfort_score'] = df.apply(lambda row: calculate_comfort_score(row['temperature'], row['humidity']), axis=1)
+        
         # Maak subplots
         fig = make_subplots(
-            rows=4, cols=1,
-            subplot_titles=(f'🌡️ {t["temperature"]}', f'💧 {t["humidity"]}', f'💦 {t["dewpoint"]}', f'🌫️ {t["abs_humidity"]}'),
-            vertical_spacing=0.10
+            rows=5, cols=1,
+            subplot_titles=(f'🌡️ {t["temperature"]}', f'💧 {t["humidity"]}', f'💦 {t["dewpoint"]}', f'🌫️ {t["abs_humidity"]}', f'😊 {t["comfort"]}'),
+            vertical_spacing=0.08
         )
         
         fig.add_trace(
@@ -336,6 +383,22 @@ def register_callbacks(app):
             row=4, col=1
         )
         
+        # Comfort score grafiek met kleurcodering
+        fig.add_trace(
+            go.Scatter(
+                x=df['timestamp'], 
+                y=df['comfort_score'], 
+                mode='lines',
+                name=t['comfort'],
+                line=dict(color='#f39c12', width=2.5),
+                fill='tozeroy',
+                fillcolor='rgba(243, 156, 18, 0.1)',
+                hovertemplate='<b>Score: %{y}</b><br>%{customdata}<extra></extra>',
+                customdata=df['timestamp_formatted']
+            ),
+            row=5, col=1
+        )
+        
         # Bereken dynamische Y-axis ranges met padding
         temp_min, temp_max = df['temperature'].min(), df['temperature'].max()
         temp_range = [max(0, temp_min - 5), temp_max + 5]
@@ -351,7 +414,7 @@ def register_callbacks(app):
         
         fig.update_xaxes(
             title_text=t['time'], 
-            row=4, col=1,
+            row=5, col=1,
             showgrid=True,
             gridcolor='rgba(0,0,0,0.05)'
         )
@@ -383,9 +446,19 @@ def register_callbacks(app):
             gridcolor='rgba(0,0,0,0.05)',
             range=abs_range
         )
+        fig.update_yaxes(
+            title_text=t['score'], 
+            row=5, col=1,
+            showgrid=True,
+            gridcolor='rgba(0,0,0,0.05)',
+            range=[-0.5, 6.5],
+            tickmode='linear',
+            tick0=0,
+            dtick=1
+        )
         
         fig.update_layout(
-            height=900,
+            height=1100,
             showlegend=False,
             hovermode='x unified',
             plot_bgcolor='rgba(0,0,0,0.02)',

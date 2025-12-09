@@ -74,3 +74,6 @@ dmypy.json
 # Test en debug scripts
 test_*.py
 check_*.py
+
+# wiki
+.wiki/
