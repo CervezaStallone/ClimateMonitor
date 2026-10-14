@@ -14,9 +14,13 @@
 - **Rationale**: Werkzeug/Flask already installed with Dash; server-rendered forms work even when Dash JS fails to load; guard on `_dash-update-component` makes FR-009 enforceable server-side.
 - **Alternatives**: `dash-auth` BasicAuth (no logout, no settings-only mode, new dependency); Flask-Login (new dependency for one user).
 
+## Session revocation
+- **Decision**: the signed Flask cookie only carries a random session id; validity lives server-side in memory (`sid -> last_seen, password hash at login`).
+- **Rationale**: logout, password change and password reset must invalidate copied cookies, and the inactivity timeout must not be extendable by the client. A restart logs everyone out, which is acceptable.
+
 ## Throttling
-- **Decision**: in-memory dict `{client_ip: [failure timestamps]}`, 5 failures/5 min → block 5 min.
-- **Rationale**: single process; state loss on restart is acceptable.
+- **Decision**: in-memory failures per client (IPv4 address, IPv6 /64), 5 failures/5 min → block 5 min; plus a global cap of 50 failures/5 min; expired entries are pruned.
+- **Rationale**: single process; per-/64 and global caps stop bypass via many addresses; state loss on restart is acceptable.
 
 ## Host/port fallback
 - **Decision**: try stored host/port; on `OSError` while binding, log and retry with `.env`/defaults (`0.0.0.0:8050`).
