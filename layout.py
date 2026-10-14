@@ -1,11 +1,7 @@
-import os
 from dash import dcc, html
-from dotenv import load_dotenv
-from translations import LANGUAGE_NAMES, TRANSLATIONS
 
-# Laad environment variabelen
-load_dotenv()
-DEFAULT_LANGUAGE = os.getenv('DEFAULT_LANGUAGE', 'EN').lower()
+import settings
+from translations import LANGUAGE_NAMES, TRANSLATIONS
 
 # Custom HTML template met CSS
 HTML_TEMPLATE = '''
@@ -68,9 +64,12 @@ HTML_TEMPLATE = '''
 '''
 
 def create_layout():
-    """Creëert de hoofdlayout van de applicatie"""
+    """Creëert de hoofdlayout van de applicatie (per page load, zodat de standaardtaal uit Settings komt)"""
+    DEFAULT_LANGUAGE = settings.get('default_language')
+    t = TRANSLATIONS[DEFAULT_LANGUAGE]
     return html.Div([
-        # Store voor geselecteerde taal (gebruik DEFAULT_LANGUAGE uit .env)
+        dcc.Location(id='url', refresh=False),
+        # Store voor geselecteerde taal (standaardtaal uit Settings)
         dcc.Store(id='selected-language', data=DEFAULT_LANGUAGE),
         # Store voor grafiek zoom/relayout state
         dcc.Store(id='graph-relayout-data', data={}),
@@ -108,6 +107,8 @@ def create_layout():
             'boxShadow': '0 4px 6px rgba(0,0,0,0.1)'
         }),
         
+        dcc.Tabs(id='main-tabs', value='dashboard', children=[
+        dcc.Tab(id='tab-dashboard', label=t['tab_dashboard'], value='dashboard', children=[
         # Huidige waarden - alle 5 cards in een rij
         html.Div([
             # Temperatuur
@@ -483,6 +484,18 @@ def create_layout():
             'boxShadow': '0 4px 6px rgba(0,0,0,0.1)',
             'marginBottom': '50px'
         }),
+        
+        ]),
+        dcc.Tab(id='tab-settings', label=t['tab_settings'], value='settings', children=[
+            html.Div(id='settings-content', style={
+                'marginTop': '20px',
+                'padding': '30px',
+                'background': 'white',
+                'borderRadius': '15px',
+                'boxShadow': '0 4px 6px rgba(0,0,0,0.1)'
+            })
+        ])
+        ]),
         
         # Store voor historische data
         dcc.Store(id='historical-data-store'),
