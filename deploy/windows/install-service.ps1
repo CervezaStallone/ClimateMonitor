@@ -74,7 +74,7 @@ foreach ($Item in $Items) {
     $Who = Test-OnlyAdminsCanChange $Item.FullName
     if ($Who) {
         Write-Error ("Not only administrators can change '$($Item.FullName)' ($Who). Move the app to a folder that only " +
-                     "administrators can change, for example C:\Program Files\XY-MD02_WebApp, and run this script again.")
+                     "administrators can change, for example C:\Program Files\ClimateMonitor, and run this script again.")
         exit 1
     }
 }

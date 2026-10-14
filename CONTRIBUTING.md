@@ -1,6 +1,6 @@
-# Contributing to XY-MD02 WebApp
+# Contributing to Climate Monitor
 
-Thank you for your interest in contributing to the XY-MD02 WebApp project! We welcome contributions from the community.
+Thank you for your interest in contributing to the Climate Monitor project! We welcome contributions from the community.
 
 ## Table of Contents
 
@@ -23,12 +23,12 @@ This project and everyone participating in it is governed by our [Code of Conduc
 1. **Fork the repository** on GitHub
 2. **Clone your fork** locally:
    ```bash
-   git clone https://github.com/YOUR-USERNAME/XY-MD02_WebApp.git
-   cd XY-MD02_WebApp
+   git clone https://github.com/YOUR-USERNAME/ClimateMonitor.git
+   cd ClimateMonitor
    ```
 3. **Add the upstream repository**:
    ```bash
-   git remote add upstream https://github.com/CervezaStallone/XY-MD02_WebApp.git
+   git remote add upstream https://github.com/CervezaStallone/ClimateMonitor.git
    ```
 
 ## How to Contribute
@@ -120,7 +120,7 @@ Enhancement suggestions are tracked as GitHub issues. When creating an enhanceme
 The project follows a modular architecture:
 
 ```
-XY-MD02_WebApp/
+ClimateMonitor/
 ├── app.py                    # Entry point
 ├── database.py               # Database operations
 ├── modbus_reader.py          # Modbus communication
@@ -275,4 +275,4 @@ If you have questions about contributing:
 
 ---
 
-**Thank you for contributing to XY-MD02 WebApp!** 🎉
+**Thank you for contributing to Climate Monitor!** 🎉

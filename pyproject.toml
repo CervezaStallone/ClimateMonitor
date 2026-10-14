@@ -49,10 +49,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/CervezaStallone/XY-MD02_WebApp"
-Repository = "https://github.com/CervezaStallone/XY-MD02_WebApp"
-Issues = "https://github.com/CervezaStallone/XY-MD02_WebApp/issues"
-Changelog = "https://github.com/CervezaStallone/XY-MD02_WebApp/releases"
+Homepage = "https://github.com/CervezaStallone/ClimateMonitor"
+Repository = "https://github.com/CervezaStallone/ClimateMonitor"
+Issues = "https://github.com/CervezaStallone/ClimateMonitor/issues"
+Changelog = "https://github.com/CervezaStallone/ClimateMonitor/releases"
 
 [tool.setuptools]
 packages = []
