@@ -51,6 +51,12 @@ jobs:
         python -m py_compile auth.py
         python -m py_compile test_app.py
     
+    - name: Check service scripts
+      run: |
+        shellcheck deploy/linux/*.sh
+        bash -n deploy/linux/install-service.sh
+        bash -n deploy/linux/uninstall-service.sh
+    
     - name: Run automated tests
       run: |
         if [ -f test_app.py ]; then
