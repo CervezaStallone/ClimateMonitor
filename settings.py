@@ -60,6 +60,12 @@ SCHEMA = {
     'alert_offline_minutes': {'type': int, 'default': 10, 'section': 'alerts', 'min': 0, 'max': 1440},
 }
 
+# Een opgeslagen secret gaat alleen naar dezelfde bestemming. Wijzigt een van deze velden, dan moet
+# het secret opnieuw ingevuld worden (anders kan het naar een andere server gestuurd worden).
+SECRET_BOUND_TO = {
+    'smtp_password': ['smtp_host', 'smtp_port', 'smtp_username'],
+}
+
 # Als een kanaal aan staat moeten deze velden ingevuld zijn
 REQUIRED_WHEN = {
     'telegram_enabled': ['telegram_bot_token', 'telegram_chat_id'],
@@ -194,8 +200,23 @@ def public_values():
     return {k: bool(get(k)) if SCHEMA[k].get('secret') else get(k) for k in SCHEMA}
 
 
+def _secret_destination_changed(secret, values):
+    """True als een veld waaraan het opgeslagen secret gebonden is een andere waarde krijgt."""
+    for field in SECRET_BOUND_TO.get(secret, []):
+        if field in values:
+            try:
+                if coerce(field, values[field]) != get(field):
+                    return True
+            except (ValueError, TypeError):
+                return True
+    return False
+
+
 def merged(values):
-    """Opgeslagen instellingen met (ongevalideerde) formulierwaarden erover; lege secrets = opgeslagen waarde."""
+    """Opgeslagen instellingen met (ongevalideerde) formulierwaarden erover (voor de testknoppen).
+
+    Een leeg secret = opgeslagen waarde, maar alleen als de bestemming niet gewijzigd is.
+    """
     result = {k: get(k) for k in SCHEMA}
     for key, raw in values.items():
         if key in SCHEMA and not (SCHEMA[key].get('secret') and (raw is None or str(raw) == '')):
@@ -203,6 +224,9 @@ def merged(values):
                 result[key] = coerce(key, raw)
             except (ValueError, TypeError):
                 pass
+    for secret in SECRET_BOUND_TO:
+        if not values.get(secret) and _secret_destination_changed(secret, values):
+            result[secret] = ''
     return result
 
 
@@ -228,6 +252,10 @@ def save(values):
             errors[key] = error
         else:
             clean[key] = value
+    if not errors:
+        for secret in SECRET_BOUND_TO:
+            if secret not in clean and get(secret) and _secret_destination_changed(secret, values):
+                errors[secret] = 'err_secret_reenter'
     if not errors:
         result = {k: get(k) for k in SCHEMA}
         result.update(clean)

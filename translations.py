@@ -213,7 +213,8 @@ TRANSLATIONS = {
         'alert_low': '⚠️ {device}: {metric} {value} {unit} is onder het minimum van {limit} {unit} ({time})',
         'alert_recovered': '✅ {device}: {metric} is weer normaal: {value} {unit} (grens {limit} {unit}, {time})',
         'alert_offline': '📴 {device}: geen meetwaarden meer sinds {time}',
-        'alert_online': '📶 {device}: weer online ({time})'
+        'alert_online': '📶 {device}: weer online ({time})',
+        'err_secret_reenter': 'Server of gebruiker gewijzigd: vul het wachtwoord opnieuw in'
     },
     'en': {
         'title': '🌡️ Modbus Climate Monitor',
@@ -421,7 +422,8 @@ TRANSLATIONS = {
         'alert_low': '⚠️ {device}: {metric} {value} {unit} is below the minimum of {limit} {unit} ({time})',
         'alert_recovered': '✅ {device}: {metric} is back to normal: {value} {unit} (limit {limit} {unit}, {time})',
         'alert_offline': '📴 {device}: no readings since {time}',
-        'alert_online': '📶 {device}: back online ({time})'
+        'alert_online': '📶 {device}: back online ({time})',
+        'err_secret_reenter': 'Server or user changed: enter the password again'
     },
     'de': {
         'title': '🌡️ Modbus Klimamonitor',
@@ -629,7 +631,8 @@ TRANSLATIONS = {
         'alert_low': '⚠️ {device}: {metric} {value} {unit} liegt unter dem Minimum von {limit} {unit} ({time})',
         'alert_recovered': '✅ {device}: {metric} ist wieder normal: {value} {unit} (Grenze {limit} {unit}, {time})',
         'alert_offline': '📴 {device}: keine Messwerte seit {time}',
-        'alert_online': '📶 {device}: wieder online ({time})'
+        'alert_online': '📶 {device}: wieder online ({time})',
+        'err_secret_reenter': 'Server oder Benutzer geändert: Passwort erneut eingeben'
     },
     'fr': {
         'title': '🌡️ Moniteur Climatique Modbus',
@@ -837,7 +840,8 @@ TRANSLATIONS = {
         'alert_low': '⚠️ {device} : {metric} {value} {unit} est sous le minimum de {limit} {unit} ({time})',
         'alert_recovered': '✅ {device} : {metric} est redevenu normal : {value} {unit} (seuil {limit} {unit}, {time})',
         'alert_offline': '📴 {device} : aucune mesure depuis {time}',
-        'alert_online': '📶 {device} : de nouveau en ligne ({time})'
+        'alert_online': '📶 {device} : de nouveau en ligne ({time})',
+        'err_secret_reenter': 'Serveur ou utilisateur modifié : saisissez à nouveau le mot de passe'
     },
     'es': {
         'title': '🌡️ Monitor Climático Modbus',
@@ -1045,6 +1049,7 @@ TRANSLATIONS = {
         'alert_low': '⚠️ {device}: {metric} {value} {unit} está por debajo del mínimo de {limit} {unit} ({time})',
         'alert_recovered': '✅ {device}: {metric} ha vuelto a la normalidad: {value} {unit} (límite {limit} {unit}, {time})',
         'alert_offline': '📴 {device}: sin mediciones desde {time}',
-        'alert_online': '📶 {device}: de nuevo en línea ({time})'
+        'alert_online': '📶 {device}: de nuevo en línea ({time})',
+        'err_secret_reenter': 'Servidor o usuario cambiado: introduzca de nuevo la contraseña'
     }
 }
