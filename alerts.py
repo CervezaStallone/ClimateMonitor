@@ -322,7 +322,9 @@ class Notifier(threading.Thread):
         log.appendleft({'time': time.time(), 'channel': item['channel'], 'text': item['text'], 'ok': error is None,
                         'error': error, 'attempt': item['attempt'] + 1})
         if error:
-            print(f"✗ Melding via {item['channel']} mislukt (poging {item['attempt'] + 1}): {error}")
+            # Geen foutdetails in de console/journal: die kunnen gegevens van de server bevatten;
+            # de (opgeschoonde) foutmelding staat in het meldingslog in Settings
+            print(f"✗ Melding via {item['channel']} mislukt (poging {item['attempt'] + 1}), zie Settings > Meldingen")
             item['attempt'] += 1
             item['next_try'] = time.time() + min(30 * 2 ** (item['attempt'] - 1), MAX_RETRY_DELAY)
             self.waiting.append(item)
