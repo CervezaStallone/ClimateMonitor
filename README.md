@@ -25,6 +25,7 @@ A professional real-time climate monitoring dashboard application for the XY-MD0
 - **Multiple sensors and RS-485 buses**: several USB/RS-485 interfaces, each with several Modbus slaves; combined and per-sensor graphs
 - **Configurable in the browser**: Settings tab for buses, sensors, timezone, language, data retention, server and security
 - **Notifications**: Telegram and/or e-mail when limits are exceeded (global or per sensor), when values are back to normal and when a sensor goes offline
+- **MQTT**: publish the values of every sensor to an MQTT broker (Home Assistant, Node-RED, SCADA)
 - **Login protection**: Admin password for the Settings tab, optionally for the whole app
 
 ### Screenshots
@@ -129,6 +130,7 @@ XY-MD02_WebApp/
 ├── modbus_reader.py            # Modbus RTU: one thread per bus, batched database writes
 ├── devices.py                  # Buses and sensors configuration, live status
 ├── alerts.py                   # Limits, alarm state, Telegram/e-mail notifications
+├── mqtt_publisher.py           # MQTT publishing per sensor
 ├── psychrometric.py            # Mollier diagram generation
 ├── callbacks.py                # Dash callbacks (7 functions)
 ├── settings.py                 # Settings stored in the database, validation, password reset
@@ -157,6 +159,7 @@ Open the **Settings** tab in the web app. The first visit asks you to create an 
 |---------|----------|
 | Modbus buses and sensors | Poll interval, buses (RS-485 interfaces), sensors (Modbus slaves) |
 | Notifications: channels | Telegram bot token and chat ID, SMTP server, sender and recipients, test buttons |
+| MQTT | Broker, port, TLS, login, client ID, topic prefix, publish interval, QoS, retain, test button |
 | Notifications: limits | Limits per quantity (all sensors or one sensor), alarm delay, hysteresis, recovery and offline alerts |
 | Region and language | Timezone, default language |
 | Data | Data retention (days, 0 = forever), debug logging |
@@ -220,6 +223,22 @@ its detailed view and historical replay.
    - *Notify when back to normal* and *Offline alert after N minutes* (0 = off).
    - The last 20 notifications and their delivery status are listed below the limits. Failed
      messages are retried automatically (up to every hour).
+
+#### MQTT
+
+Enable *Publish values to an MQTT broker* in Settings → MQTT and enter the broker address (and
+optionally TLS, username/password, client ID). **Test connection** checks the settings before
+saving. With topic prefix `xy-md02` every sensor publishes, at most once per publish interval:
+
+| Topic | Payload |
+|-------|---------|
+| `xy-md02/status` | `online` / `offline` (retained, `offline` via last will) |
+| `xy-md02/<sensor>/state` | `{"device_id": 3, "name": "Kas noord", "temperature": 18.7, "humidity": 62.0, "dewpoint": 11.1, "absolute_humidity": 9.92, "timestamp": "2026-10-14T12:15:43+02:00"}` |
+| `xy-md02/<sensor>/temperature` (and `humidity`, `dewpoint`, `absolute_humidity`) | plain value, e.g. `18.7` |
+
+`<sensor>` is the sensor name in lower case with `-` instead of spaces (`Kas noord` → `kas-noord`);
+renaming a sensor changes its topic, `device_id` stays the same. If the broker is unreachable,
+measuring continues and the app reconnects automatically; the connection status is shown in Settings.
 
 #### Modbus values in `.env` (first start only)
 

@@ -58,18 +58,32 @@ SCHEMA = {
     'alert_hysteresis_humidity': {'type': float, 'default': 2.0, 'section': 'alerts', 'min': 0, 'max': 50},
     'alert_notify_recovery': {'type': bool, 'default': True, 'section': 'alerts'},
     'alert_offline_minutes': {'type': int, 'default': 10, 'section': 'alerts', 'min': 0, 'max': 1440},
+    # MQTT
+    'mqtt_enabled': {'type': bool, 'default': False, 'section': 'mqtt'},
+    'mqtt_host': {'type': str, 'default': '', 'section': 'mqtt', 'optional': True, 'check': 'host'},
+    'mqtt_port': {'type': int, 'default': 1883, 'section': 'mqtt', 'min': 1, 'max': 65535},
+    'mqtt_tls': {'type': bool, 'default': False, 'section': 'mqtt'},
+    'mqtt_username': {'type': str, 'default': '', 'section': 'mqtt', 'optional': True},
+    'mqtt_password': {'type': str, 'default': '', 'section': 'mqtt', 'secret': True, 'optional': True},
+    'mqtt_client_id': {'type': str, 'default': '', 'section': 'mqtt', 'optional': True, 'check': 'client_id'},
+    'mqtt_topic_prefix': {'type': str, 'default': 'xy-md02', 'section': 'mqtt', 'check': 'topic'},
+    'mqtt_publish_interval_seconds': {'type': int, 'default': 10, 'section': 'mqtt', 'min': 1, 'max': 3600},
+    'mqtt_qos': {'type': int, 'default': 0, 'section': 'mqtt', 'choices': [0, 1]},
+    'mqtt_retain': {'type': bool, 'default': True, 'section': 'mqtt'},
 }
 
 # Een opgeslagen secret gaat alleen naar dezelfde bestemming. Wijzigt een van deze velden, dan moet
 # het secret opnieuw ingevuld worden (anders kan het naar een andere server gestuurd worden).
 SECRET_BOUND_TO = {
     'smtp_password': ['smtp_host', 'smtp_port', 'smtp_username', 'smtp_security'],   # ook geen downgrade naar onversleuteld
+    'mqtt_password': ['mqtt_host', 'mqtt_port', 'mqtt_username', 'mqtt_tls'],
 }
 
 # Als een kanaal aan staat moeten deze velden ingevuld zijn
 REQUIRED_WHEN = {
     'telegram_enabled': ['telegram_bot_token', 'telegram_chat_id'],
     'smtp_enabled': ['smtp_host', 'smtp_from', 'smtp_to'],
+    'mqtt_enabled': ['mqtt_host'],
 }
 
 # Interne waarden: nooit naar de browser
@@ -78,6 +92,8 @@ INTERNAL_KEYS = ('admin_password_hash', 'secret_key')
 _EMAIL_RE = re.compile(r'^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$')
 _TELEGRAM_TOKEN_RE = re.compile(r'^\d{5,}:[A-Za-z0-9_-]{30,}$')
 _CHAT_ID_RE = re.compile(r'^(-?\d{1,20}|@[A-Za-z][A-Za-z0-9_]{4,})$')
+_TOPIC_RE = re.compile(r'^[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*$')
+_CLIENT_ID_RE = re.compile(r'^[A-Za-z0-9_.-]{1,64}$')
 _HOSTNAME_RE = re.compile(r'^[A-Za-z0-9]([A-Za-z0-9-]{0,62}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,62}[A-Za-z0-9])?)*$')
 
 _cache = {}
@@ -142,6 +158,10 @@ def validate(key, value):
         return 'err_telegram_token'
     if spec.get('check') == 'chat_id' and not _CHAT_ID_RE.match(value):
         return 'err_chat_id'
+    if spec.get('check') == 'topic' and (len(value) > 100 or not _TOPIC_RE.match(value)):
+        return 'err_topic'
+    if spec.get('check') == 'client_id' and not _CLIENT_ID_RE.match(value):
+        return 'err_client_id'
     if spec.get('check') == 'host':
         try:
             ipaddress.ip_address(value)
