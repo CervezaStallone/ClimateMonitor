@@ -157,14 +157,16 @@ def _record_failure(client, trusted_id=None):
             _failures.setdefault(f'trusted:{trusted_id}', []).append(time.time())
 
 
+# De app heeft maar een paar pagina's: alleen deze redirect doelen zijn toegestaan (geen open redirect)
+ALLOWED_NEXT = ('/', '/?tab=settings')
+
+
 def _safe_next(target):
-    """Alleen lokale paden als redirect doel (geen open redirect)."""
-    if not target or any(ord(c) < 0x21 or c == '\\' for c in target):
-        return '/'
-    parts = urlsplit(target)
-    if parts.scheme or parts.netloc or not target.startswith('/') or target.startswith('//'):
-        return '/'
-    return target
+    """Redirect doel na inloggen: alleen bekende lokale pagina's, anders de startpagina."""
+    for allowed in ALLOWED_NEXT:
+        if target == allowed:
+            return allowed
+    return '/'
 
 
 def _lang():
