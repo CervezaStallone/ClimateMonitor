@@ -90,7 +90,7 @@ def create_layout():
                         }
                     )
                 ], style={'display': 'inline-block', 'width': '10%', 'textAlign': 'left', 'verticalAlign': 'middle'}),
-                html.H1(id='page-title', children='🌡️ Modbus Klimaat Monitor', style={
+                html.H1(id='page-title', children=t['title'], style={
                     'textAlign': 'center',
                     'color': '#2c3e50',
                     'marginBottom': '0px',
@@ -133,7 +133,7 @@ def create_layout():
             html.Div([
                 html.Div([
                     html.Div("🌡️", style={'fontSize': '35px', 'marginBottom': '8px'}),
-                    html.Div(id='label-temperature', children="Temperatuur", style={'fontSize': '14px', 'color': '#7f8c8d', 'marginBottom': '5px'}),
+                    html.Div(id='label-temperature', children=t['temperature'], style={'fontSize': '14px', 'color': '#7f8c8d', 'marginBottom': '5px'}),
                     html.Div(id='current-temp', style={
                         'fontSize': '28px',
                         'fontWeight': 'bold',
@@ -154,7 +154,7 @@ def create_layout():
             html.Div([
                 html.Div([
                     html.Div("💧", style={'fontSize': '35px', 'marginBottom': '8px'}),
-                    html.Div(id='label-humidity', children="Luchtvochtigheid", style={'fontSize': '14px', 'color': '#7f8c8d', 'marginBottom': '5px'}),
+                    html.Div(id='label-humidity', children=t['humidity'], style={'fontSize': '14px', 'color': '#7f8c8d', 'marginBottom': '5px'}),
                     html.Div(id='current-humidity', style={
                         'fontSize': '28px',
                         'fontWeight': 'bold',
@@ -175,7 +175,7 @@ def create_layout():
             html.Div([
                 html.Div([
                     html.Div("💦", style={'fontSize': '35px', 'marginBottom': '8px'}),
-                    html.Div(id='label-dewpoint', children="Dauwpunt", style={'fontSize': '14px', 'color': '#7f8c8d', 'marginBottom': '5px'}),
+                    html.Div(id='label-dewpoint', children=t['dewpoint'], style={'fontSize': '14px', 'color': '#7f8c8d', 'marginBottom': '5px'}),
                     html.Div(id='current-dewpoint', style={
                         'fontSize': '28px',
                         'fontWeight': 'bold',
@@ -196,7 +196,7 @@ def create_layout():
             html.Div([
                 html.Div([
                     html.Div("🌫️", style={'fontSize': '35px', 'marginBottom': '8px'}),
-                    html.Div(id='label-abs-humidity', children="Abs. Vochtigheid", style={'fontSize': '14px', 'color': '#7f8c8d', 'marginBottom': '5px'}),
+                    html.Div(id='label-abs-humidity', children=t['abs_humidity'], style={'fontSize': '14px', 'color': '#7f8c8d', 'marginBottom': '5px'}),
                     html.Div(id='current-abs-humidity', style={
                         'fontSize': '28px',
                         'fontWeight': 'bold',
@@ -217,7 +217,7 @@ def create_layout():
             html.Div([
                 html.Div([
                     html.Div("☀️", id='comfort-icon', style={'fontSize': '35px', 'marginBottom': '8px'}),
-                    html.Div(id='label-comfort', children="Behagelijkheid", style={'fontSize': '14px', 'color': '#7f8c8d', 'marginBottom': '5px'}),
+                    html.Div(id='label-comfort', children=t['comfort'], style={'fontSize': '14px', 'color': '#7f8c8d', 'marginBottom': '5px'}),
                     html.Div(id='comfort-level', style={
                         'fontSize': '14px',
                         'fontWeight': 'bold',
@@ -226,7 +226,7 @@ def create_layout():
                         'marginBottom': '5px'
                     }),
                     html.Div([
-                        html.Span(id='label-score', children="Score: ", style={'fontSize': '14px', 'color': '#7f8c8d'}),
+                        html.Span(id='label-score', children=t['score'] + ': ', style={'fontSize': '14px', 'color': '#7f8c8d'}),
                         html.Span(id='comfort-score', style={'fontSize': '20px', 'fontWeight': 'bold', 'color': '#2c3e50'})
                     ]),
                     html.Div(id='tooltip-content', children=[
@@ -282,7 +282,7 @@ def create_layout():
         # Controls
         html.Div([
             html.Div([
-                html.Label(id='label-time-period', children="📅 Tijdsperiode:", style={
+                html.Label(id='label-time-period', children=t['time_period'], style={
                     'fontSize': '16px',
                     'fontWeight': 'bold',
                     'color': '#2c3e50',
@@ -291,17 +291,11 @@ def create_layout():
                 }),
                 dcc.Dropdown(
                     id='time-range-dropdown',
-                    options=[
-                        {'label': '⏱️ Laatste 1 minuut', 'value': 1},
-                        {'label': '⏱️ Laatste 5 minuten', 'value': 5},
-                        {'label': '⏱️ Laatste 15 minuten', 'value': 15},
-                        {'label': '⏱️ Laatste 30 minuten', 'value': 30},
-                        {'label': '🕐 Laatste 1 uur', 'value': 60},
-                        {'label': '🕐 Laatste 6 uur', 'value': 360},
-                        {'label': '📆 Laatste 24 uur', 'value': 1440},
-                        {'label': '📆 Laatste 7 dagen', 'value': 10080},
-                        {'label': '📊 Alle data', 'value': -1}
-                    ],
+                    options=[{'label': t[key], 'value': value} for key, value in [
+                        ('last_1min', 1), ('last_5min', 5), ('last_15min', 15), ('last_30min', 30), ('last_1hour', 60),
+                        ('last_6hours', 360), ('last_12hours', 720), ('last_24hours', 1440), ('last_7days', 10080),
+                        ('last_14days', 20160), ('last_1month', 43200), ('last_3months', 129600),
+                        ('last_6months', 259200), ('all_data', -1)]],
                     value=5,
                     clearable=False,
                     style={'borderRadius': '8px'}
@@ -309,7 +303,7 @@ def create_layout():
             ], style={'width': '48%', 'display': 'inline-block'}),
             
             html.Div([
-                html.Label(id='label-database', children="📊 Database:", style={
+                html.Label(id='label-database', children=t['database'], style={
                     'fontSize': '16px',
                     'fontWeight': 'bold',
                     'color': '#2c3e50',
@@ -332,7 +326,7 @@ def create_layout():
         
         # Psychrometric Chart (Mollier Diagram) met historische replay
         html.Div([
-            html.H3(id='label-psychrometric-chart', children='📐 Mollier Diagram (Psychrometrisch)', style={
+            html.H3(id='label-psychrometric-chart', children=f"📐 {t['psychrometric_chart']}", style={
                 'color': '#2c3e50',
                 'marginBottom': '20px',
                 'fontFamily': 'Arial Black'
@@ -348,7 +342,7 @@ def create_layout():
             html.Div(id='history-controls', children=[
                 html.Button(
                     id='open-range-modal-btn',
-                    children='📅 Kies bereik voor historische analyse',
+                    children=t['btn_select_range'],
                     n_clicks=0,
                     style={
                         'padding': '12px 30px',
@@ -368,7 +362,7 @@ def create_layout():
             
             # Slider voor historische data
             html.Div([
-                html.Label(id='label-time-position', children='Tijdstip:', style={
+                html.Label(id='label-time-position', children=t['time_position'], style={
                     'fontSize': '16px',
                     'fontWeight': 'bold',
                     'color': '#2c3e50',
@@ -400,7 +394,7 @@ def create_layout():
             html.Div([
                 html.Div([
                     html.Div([
-                        html.H3(id='modal-title', children='📅 Selecteer Periode', style={'marginTop': '0', 'color': '#2c3e50', 'marginBottom': '20px'}),
+                        html.H3(id='modal-title', children=t['modal_title'], style={'marginTop': '0', 'color': '#2c3e50', 'marginBottom': '20px'}),
                         html.Button('✕', id='close-range-modal-btn', n_clicks=0, style={
                             'position': 'absolute',
                             'top': '15px',
@@ -413,55 +407,55 @@ def create_layout():
                         }),
                         html.Div([
                             # Preset buttons in modal
-                            html.H4('⚡ Snelle selectie', style={'color': '#34495e', 'marginBottom': '15px'}),
+                            html.H4(id='label-quick-select', children=t['quick_select'], style={'color': '#34495e', 'marginBottom': '15px'}),
                             html.Div([
-                                html.Button('5 min', id='preset-5min', n_clicks=0, style={'margin': '5px', 'padding': '8px 16px', 'borderRadius': '8px', 'border': '2px solid #3498db', 'background': 'white', 'cursor': 'pointer', 'fontWeight': 'bold', 'color': '#3498db'}),
-                                html.Button('10 min', id='preset-10min', n_clicks=0, style={'margin': '5px', 'padding': '8px 16px', 'borderRadius': '8px', 'border': '2px solid #3498db', 'background': 'white', 'cursor': 'pointer', 'fontWeight': 'bold', 'color': '#3498db'}),
-                                html.Button('30 min', id='preset-30min', n_clicks=0, style={'margin': '5px', 'padding': '8px 16px', 'borderRadius': '8px', 'border': '2px solid #3498db', 'background': 'white', 'cursor': 'pointer', 'fontWeight': 'bold', 'color': '#3498db'}),
-                                html.Button('1 uur', id='preset-1hour', n_clicks=0, style={'margin': '5px', 'padding': '8px 16px', 'borderRadius': '8px', 'border': '2px solid #3498db', 'background': 'white', 'cursor': 'pointer', 'fontWeight': 'bold', 'color': '#3498db'}),
-                                html.Button('2 uur', id='preset-2hours', n_clicks=0, style={'margin': '5px', 'padding': '8px 16px', 'borderRadius': '8px', 'border': '2px solid #3498db', 'background': 'white', 'cursor': 'pointer', 'fontWeight': 'bold', 'color': '#3498db'}),
-                                html.Button('6 uur', id='preset-6hours', n_clicks=0, style={'margin': '5px', 'padding': '8px 16px', 'borderRadius': '8px', 'border': '2px solid #3498db', 'background': 'white', 'cursor': 'pointer', 'fontWeight': 'bold', 'color': '#3498db'}),
+                                html.Button(t['btn_5min'], id='preset-5min', n_clicks=0, style={'margin': '5px', 'padding': '8px 16px', 'borderRadius': '8px', 'border': '2px solid #3498db', 'background': 'white', 'cursor': 'pointer', 'fontWeight': 'bold', 'color': '#3498db'}),
+                                html.Button(t['btn_10min'], id='preset-10min', n_clicks=0, style={'margin': '5px', 'padding': '8px 16px', 'borderRadius': '8px', 'border': '2px solid #3498db', 'background': 'white', 'cursor': 'pointer', 'fontWeight': 'bold', 'color': '#3498db'}),
+                                html.Button(t['btn_30min'], id='preset-30min', n_clicks=0, style={'margin': '5px', 'padding': '8px 16px', 'borderRadius': '8px', 'border': '2px solid #3498db', 'background': 'white', 'cursor': 'pointer', 'fontWeight': 'bold', 'color': '#3498db'}),
+                                html.Button(t['btn_1hour'], id='preset-1hour', n_clicks=0, style={'margin': '5px', 'padding': '8px 16px', 'borderRadius': '8px', 'border': '2px solid #3498db', 'background': 'white', 'cursor': 'pointer', 'fontWeight': 'bold', 'color': '#3498db'}),
+                                html.Button(t['btn_2hours'], id='preset-2hours', n_clicks=0, style={'margin': '5px', 'padding': '8px 16px', 'borderRadius': '8px', 'border': '2px solid #3498db', 'background': 'white', 'cursor': 'pointer', 'fontWeight': 'bold', 'color': '#3498db'}),
+                                html.Button(t['btn_6hours'], id='preset-6hours', n_clicks=0, style={'margin': '5px', 'padding': '8px 16px', 'borderRadius': '8px', 'border': '2px solid #3498db', 'background': 'white', 'cursor': 'pointer', 'fontWeight': 'bold', 'color': '#3498db'}),
                             ], style={'marginBottom': '10px', 'textAlign': 'center'}),
                             html.Div([
-                                html.Button('12 uur', id='preset-12hours', n_clicks=0, style={'margin': '5px', 'padding': '8px 16px', 'borderRadius': '8px', 'border': '2px solid #3498db', 'background': 'white', 'cursor': 'pointer', 'fontWeight': 'bold', 'color': '#3498db'}),
-                                html.Button('24 uur', id='preset-24hours', n_clicks=0, style={'margin': '5px', 'padding': '8px 16px', 'borderRadius': '8px', 'border': '2px solid #3498db', 'background': 'white', 'cursor': 'pointer', 'fontWeight': 'bold', 'color': '#3498db'}),
-                                html.Button('2 dagen', id='preset-2days', n_clicks=0, style={'margin': '5px', 'padding': '8px 16px', 'borderRadius': '8px', 'border': '2px solid #3498db', 'background': 'white', 'cursor': 'pointer', 'fontWeight': 'bold', 'color': '#3498db'}),
-                                html.Button('Week', id='preset-week', n_clicks=0, style={'margin': '5px', 'padding': '8px 16px', 'borderRadius': '8px', 'border': '2px solid #3498db', 'background': 'white', 'cursor': 'pointer', 'fontWeight': 'bold', 'color': '#3498db'}),
-                                html.Button('Maand', id='preset-month', n_clicks=0, style={'margin': '5px', 'padding': '8px 16px', 'borderRadius': '8px', 'border': '2px solid #3498db', 'background': 'white', 'cursor': 'pointer', 'fontWeight': 'bold', 'color': '#3498db'}),
+                                html.Button(t['btn_12hours'], id='preset-12hours', n_clicks=0, style={'margin': '5px', 'padding': '8px 16px', 'borderRadius': '8px', 'border': '2px solid #3498db', 'background': 'white', 'cursor': 'pointer', 'fontWeight': 'bold', 'color': '#3498db'}),
+                                html.Button(t['btn_24hours'], id='preset-24hours', n_clicks=0, style={'margin': '5px', 'padding': '8px 16px', 'borderRadius': '8px', 'border': '2px solid #3498db', 'background': 'white', 'cursor': 'pointer', 'fontWeight': 'bold', 'color': '#3498db'}),
+                                html.Button(t['btn_2days'], id='preset-2days', n_clicks=0, style={'margin': '5px', 'padding': '8px 16px', 'borderRadius': '8px', 'border': '2px solid #3498db', 'background': 'white', 'cursor': 'pointer', 'fontWeight': 'bold', 'color': '#3498db'}),
+                                html.Button(t['btn_week'], id='preset-week', n_clicks=0, style={'margin': '5px', 'padding': '8px 16px', 'borderRadius': '8px', 'border': '2px solid #3498db', 'background': 'white', 'cursor': 'pointer', 'fontWeight': 'bold', 'color': '#3498db'}),
+                                html.Button(t['btn_month'], id='preset-month', n_clicks=0, style={'margin': '5px', 'padding': '8px 16px', 'borderRadius': '8px', 'border': '2px solid #3498db', 'background': 'white', 'cursor': 'pointer', 'fontWeight': 'bold', 'color': '#3498db'}),
                             ], style={'marginBottom': '30px', 'textAlign': 'center'}),
                             
                             # Divider
                             html.Hr(style={'border': '1px solid #ecf0f1', 'margin': '20px 0'}),
                             
                             # Custom date/time picker
-                            html.H4('🎯 Specifieke periode', style={'color': '#34495e', 'marginBottom': '15px'}),
-                            html.Label('Start datum en tijd:', style={'fontWeight': 'bold', 'marginBottom': '10px', 'display': 'block'}),
+                            html.H4(id='label-specific-period', children=t['specific_period'], style={'color': '#34495e', 'marginBottom': '15px'}),
+                            html.Label(id='label-start-datetime', children=t['start_datetime'], style={'fontWeight': 'bold', 'marginBottom': '10px', 'display': 'block'}),
                             dcc.DatePickerSingle(
                                 id='custom-start-date',
                                 display_format='DD-MM-YYYY',
-                                placeholder='Selecteer datum',
+                                placeholder=t['select_date'],
                                 style={'marginBottom': '10px'}
                             ),
                             html.Div([
-                                dcc.Input(id='custom-start-hour', type='number', min=0, max=23, value=0, placeholder='UU', style={'width': '70px', 'marginRight': '5px', 'padding': '8px', 'borderRadius': '5px', 'border': '1px solid #bdc3c7'}),
+                                dcc.Input(id='custom-start-hour', type='number', min=0, max=23, value=0, placeholder=t['hour_placeholder'], style={'width': '70px', 'marginRight': '5px', 'padding': '8px', 'borderRadius': '5px', 'border': '1px solid #bdc3c7'}),
                                 html.Span(':', style={'marginRight': '5px', 'fontWeight': 'bold'}),
                                 dcc.Input(id='custom-start-minute', type='number', min=0, max=59, value=0, placeholder='MM', style={'width': '70px', 'padding': '8px', 'borderRadius': '5px', 'border': '1px solid #bdc3c7'})
                             ], style={'marginBottom': '20px'}),
                             
-                            html.Label('Eind datum en tijd:', style={'fontWeight': 'bold', 'marginBottom': '10px', 'display': 'block'}),
+                            html.Label(id='label-end-datetime', children=t['end_datetime'], style={'fontWeight': 'bold', 'marginBottom': '10px', 'display': 'block'}),
                             dcc.DatePickerSingle(
                                 id='custom-end-date',
                                 display_format='DD-MM-YYYY',
-                                placeholder='Selecteer datum',
+                                placeholder=t['select_date'],
                                 style={'marginBottom': '10px'}
                             ),
                             html.Div([
-                                dcc.Input(id='custom-end-hour', type='number', min=0, max=23, value=23, placeholder='UU', style={'width': '70px', 'marginRight': '5px', 'padding': '8px', 'borderRadius': '5px', 'border': '1px solid #bdc3c7'}),
+                                dcc.Input(id='custom-end-hour', type='number', min=0, max=23, value=23, placeholder=t['hour_placeholder'], style={'width': '70px', 'marginRight': '5px', 'padding': '8px', 'borderRadius': '5px', 'border': '1px solid #bdc3c7'}),
                                 html.Span(':', style={'marginRight': '5px', 'fontWeight': 'bold'}),
                                 dcc.Input(id='custom-end-minute', type='number', min=0, max=59, value=59, placeholder='MM', style={'width': '70px', 'padding': '8px', 'borderRadius': '5px', 'border': '1px solid #bdc3c7'})
                             ], style={'marginBottom': '20px'}),
                             
-                            html.Button('✅ Toepassen', id='apply-custom-range-btn', n_clicks=0, style={
+                            html.Button(t['btn_apply'], id='apply-custom-range-btn', n_clicks=0, style={
                                 'width': '100%',
                                 'padding': '12px',
                                 'background': '#27ae60',
