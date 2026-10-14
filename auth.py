@@ -209,6 +209,8 @@ button {{ width: 100%; margin-top: 20px; padding: 10px; font: inherit; font-weig
           color: var(--accent-ink); border: 1px solid var(--accent); cursor: pointer; }}
 button:hover {{ filter: brightness(1.08); }}
 .err {{ color: var(--alarm); font-weight: 600; }}
+.site-footer {{ text-align: center; font-size: 12px; color: var(--muted); margin-top: 16px; }}
+.site-footer a {{ color: var(--muted); text-underline-offset: 3px; }}
 </style></head>
 <body><div class="box"><div class="head"><div class="brand">{escape(t["app_name"])}</div><h1>{escape(title)}</h1></div>
 <form method="post">
@@ -219,7 +221,9 @@ button:hover {{ filter: brightness(1.08); }}
 <input type="password" name="password" autocomplete="{'new-password' if repeat else 'current-password'}" required autofocus>
 {repeat_html}
 <button type="submit">{escape(button)}</button>
-</form></div></body></html>'''
+</form></div>
+<footer class="site-footer">Made by <a href="https://brdc.nl" target="_blank" rel="noopener">BRDC</a></footer>
+</body></html>'''
     return Response(body, status=status, mimetype='text/html')
 
 
