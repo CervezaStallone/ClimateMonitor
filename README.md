@@ -121,6 +121,59 @@ python app.py
 
 The application is now available at: `http://127.0.0.1:8050/`
 
+### Run as a service (start at boot, also without login)
+
+For edge devices that run unattended, install the app as a service. It then starts automatically
+when the device boots — nobody has to log in — and is restarted if it stops.
+
+#### Linux / Raspberry Pi (systemd)
+
+In the app folder:
+```bash
+sudo ./deploy/linux/install-service.sh
+```
+The script creates the virtual environment, installs the dependencies, gives the user access to
+the serial ports (`dialout` group) and installs and starts the `xy-md02` service. The service runs
+as the user who ran `sudo` (use `--user <name>` for another user; `--dry-run` shows what would
+happen without changing anything). The app folder must be owned by that user or root and must not
+be writable by others.
+
+| Task | Command |
+|------|---------|
+| Status | `systemctl status xy-md02` |
+| Live log | `journalctl -u xy-md02 -f` |
+| Restart | `sudo systemctl restart xy-md02` |
+| Update | update the app files (e.g. `git pull`), then run the install script again |
+| Uninstall | `sudo ./deploy/linux/uninstall-service.sh` (data and settings are kept) |
+
+#### Windows
+
+1. Install Python 3.10+ from [python.org](https://www.python.org/downloads/): choose *Customize installation*,
+   tick *Install Python for all users* and *Add Python to environment variables*.
+   Copy the app to a folder that only administrators can change, e.g. `C:\Program Files\XY-MD02_WebApp`.
+2. Open PowerShell **as Administrator** in the app folder and run:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\deploy\windows\install-service.ps1
+   ```
+   Changed the port in Settings? Add `-Port <number>` so the firewall rule matches.
+
+This registers the scheduled task **XY-MD02 WebApp** that starts at Windows startup under the
+limited built-in *LOCAL SERVICE* account (no login needed), restarts the app if it stops, and opens
+the web port in the firewall for domain and private networks (add `-AllowPublic` to also allow
+networks marked as public). Output is written to `logs\app.log`.
+
+Put the app in a folder that only administrators can change (e.g. `C:\Program Files\XY-MD02_WebApp`);
+the script refuses to install from a folder that normal users can modify.
+
+| Task | How |
+|------|-----|
+| Status | `Get-ScheduledTask -TaskName 'XY-MD02 WebApp'` or Task Scheduler |
+| Log | `logs\app.log` in the app folder |
+| Update | update the app files, then run `install-service.ps1` again |
+| Uninstall | `powershell -ExecutionPolicy Bypass -File .\deploy\windows\uninstall-service.ps1` (data is kept) |
+
+> After installing, open `http://<device-ip>:8050`, go to **Settings** and set the admin password.
+
 ### Project Structure
 
 ```
