@@ -8,10 +8,11 @@ from dash import ALL, Input, Output, State, callback_context, dash_table, dcc, h
 import alerts
 import auth
 import devices
+import mqtt_publisher
 import settings
 from translations import LANGUAGE_NAMES, TRANSLATIONS
 
-SECTIONS = ['modbus', 'notify', 'alerts', 'regional', 'data', 'server', 'security']
+SECTIONS = ['modbus', 'notify', 'alerts', 'mqtt', 'regional', 'data', 'server', 'security']
 
 BUS_COLUMNS = ['name', 'port', 'baudrate', 'bytesize', 'parity', 'stopbits', 'timeout', 'enabled']
 DEVICE_COLUMNS = ['id', 'name', 'bus', 'slave_id', 'function_code', 'register_temp', 'register_humidity',
@@ -150,6 +151,30 @@ def _notify_section(t):
     ]
 
 
+def _mqtt_section(t):
+    test_style = {**BUTTON_STYLE, 'padding': '6px 14px', 'fontSize': '14px', 'background': '#3498db'}
+    return [
+        html.Div(t['hint_mqtt'], style={'fontSize': '12px', 'color': '#7f8c8d', 'marginBottom': '10px',
+                                        'whiteSpace': 'pre-line'}),
+        html.Button(t['btn_test_mqtt'], id='test-mqtt', n_clicks=0, style=test_style),
+        html.Div(id='test-mqtt-status', style={'marginTop': '10px', 'fontWeight': 'bold'}),
+        html.Div(id='mqtt-status', children=mqtt_status_text(t), style={'marginTop': '10px'}),
+    ]
+
+
+def mqtt_status_text(t):
+    state = mqtt_publisher.status
+    if not settings.get('mqtt_enabled'):
+        return html.Span(t['mqtt_status_disabled'], style={'color': '#7f8c8d'})
+    if state['connected']:
+        last = state['last_publish']
+        text = t['mqtt_status_connected'] + (' · ' + t['mqtt_last_publish'].format(
+            time=time.strftime('%H:%M:%S', time.localtime(last))) if last else '')
+        return html.Span(text, style={'color': '#27ae60', 'fontWeight': 'bold'})
+    return html.Span(t['mqtt_status_disconnected'].format(error=state['error'] or '...'),
+                     style={'color': '#c0392b', 'fontWeight': 'bold'})
+
+
 def _rule_rows():
     return [{'scope': r['device_id'] or 0, 'metric': r['metric'], 'min_value': r['min_value'],
              'max_value': r['max_value'], 'enabled': 'true' if r['enabled'] else 'false'} for r in alerts.load_rules()]
@@ -215,7 +240,8 @@ def device_status_list(t):
 
 def _section(name, values, t):
     keys = [k for k, spec in settings.SCHEMA.items() if spec['section'] == name]
-    extra = {'modbus': _modbus_section, 'notify': _notify_section, 'alerts': _alerts_section}.get(name, lambda t: [])(t)
+    extra = {'modbus': _modbus_section, 'notify': _notify_section, 'alerts': _alerts_section,
+             'mqtt': _mqtt_section}.get(name, lambda t: [])(t)
     if name == 'data':
         extra.append(html.Div([
             html.Label(t['lbl_database_file'], style=LABEL_STYLE),
@@ -465,6 +491,39 @@ def register_settings_callbacks(app):
         if error:
             return html.Span(t['test_failed'].format(error=error), style={'color': '#c0392b'})
         return html.Span(t['test_ok'], style={'color': '#27ae60'})
+
+    @app.callback(
+        Output('test-mqtt-status', 'children'),
+        Input('test-mqtt', 'n_clicks'),
+        [State({'type': 'setting', 'key': ALL}, 'value'),
+         State('selected-language', 'data')],
+        prevent_initial_call=True
+    )
+    def test_mqtt(n_clicks, values, lang):
+        """Verbinding testen met de waarden in het formulier (ook nog niet opgeslagen)."""
+        t = _t(lang)
+        if not auth.is_logged_in():
+            return t['settings_locked']
+        keys = [item['id']['key'] for item in callback_context.states_list[0]]
+        config = settings.merged(dict(zip(keys, values)))
+        if not config['mqtt_host']:
+            return html.Span(t['test_missing'].format(fields=t['lbl_mqtt_host']), style={'color': '#c0392b'})
+        error = mqtt_publisher.test_connection(config)
+        if error:
+            return html.Span(t['test_failed'].format(error=error), style={'color': '#c0392b'})
+        return html.Span(t['test_mqtt_ok'], style={'color': '#27ae60'})
+
+    @app.callback(
+        Output('mqtt-status', 'children'),
+        Input('graph-update', 'n_intervals'),
+        [State('main-tabs', 'value'),
+         State('selected-language', 'data')],
+        prevent_initial_call=True
+    )
+    def refresh_mqtt_status(n, tab, lang):
+        if tab != 'settings' or n % 3 or not auth.is_logged_in():
+            return no_update
+        return mqtt_status_text(_t(lang))
 
     @app.callback(
         Output('alert-log', 'children'),
