@@ -49,9 +49,6 @@ Thumbs.db
 # Jupyter Notebook
 .ipynb_checkpoints
 
-# Test scripts and debug tools (local only)
-tests/
-
 # Local launcher scripts
 startApp.ps1
 
@@ -71,9 +68,21 @@ README.md.backup
 .dmypy.json
 dmypy.json
 
-# Test en debug scripts
-test_*.py
+# Debug scripts (local only)
 check_*.py
 
 # wiki
 .wiki/
+
+# Linters / caches
+.ruff_cache/
+
+# Environment variants (keep .env.example)
+.env.*
+!.env.example
+
+# Claude Code local settings (project skills in .claude/skills are shared)
+.claude/settings.local.json
+
+# Spec Kit machine-local state
+.specify/feature.json
