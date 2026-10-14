@@ -4,17 +4,61 @@ import pandas as pd
 from datetime import datetime, timedelta
 from dash import callback_context, html, no_update, Input, Output, State
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
+import alerts
 import devices
+import layout
 import settings
 from translations import TRANSLATIONS
 from database import get_all_measurement_tables, build_union_query, DB_FILE
 from psychrometric import add_device_points, create_psychrometric_chart, create_psychrometric_chart_historical
 
-DEVICE_COLORS = ['#3498db', '#e74c3c', '#27ae60', '#9b59b6', '#f39c12', '#16a085', '#d35400', '#2c3e50',
-                 '#c0392b', '#8e44ad', '#2980b9', '#7f8c8d']
-CARDS_STYLE = {'marginBottom': '30px'}
+# Categorisch palet per sensor (vaste volgorde, gevalideerd op kleurenblindheid en contrast).
+# Sensor 9 en verder krijgen een neutrale kleur; status-kleuren worden nooit voor sensoren gebruikt.
+SERIES = {
+    'light': ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948'],
+    'dark': ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#008300', '#9085e9', '#e66767'],
+}
+NEUTRAL_SERIES = {'light': '#9a9e97', 'dark': '#5e646b'}
+THEMES = {
+    'dark': dict(text='#e6e8e3', muted='#a2a9a2', grid='#2e343a', axis='#4a525a', paper='#24292e', plot='#1f2428',
+                 hover='#2c3238', ok='#0ca30c', warn='#fab219', alarm='#e5534b', offline='#7d838a'),
+    'light': dict(text='#1b1f23', muted='#555c55', grid='#e4e5df', axis='#a9ada5', paper='#f7f7f3', plot='#fbfbf8',
+                  hover='#eceee8', ok='#0b8a0b', warn='#c98500', alarm='#d03b3b', offline='#7d838a'),
+}
+FONT = 'system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, sans-serif'
+METRIC_UNITS = {'temperature': '°C', 'humidity': '%', 'dewpoint': '°C', 'absolute_humidity': 'g/m³', 'comfort': ''}
+METRIC_KEYS = {'temperature': 'temperature', 'humidity': 'humidity', 'dewpoint': 'dewpoint',
+               'absolute_humidity': 'abs_humidity', 'comfort': 'comfort'}
+
+
+def theme_mode():
+    mode = settings.get('dashboard_theme')
+    return mode if mode in THEMES else 'dark'
+
+
+def device_colors(mode):
+    """{device_id: kleur}; kleur volgt de sensor (vaste volgorde op id), niet de filter."""
+    palette = SERIES[mode]
+    return {d['id']: palette[i] if i < len(palette) else NEUTRAL_SERIES[mode]
+            for i, d in enumerate(devices.list_devices())}
+
+
+def style_figure(fig, mode, height=None):
+    k = THEMES[mode]
+    fig.update_layout(
+        paper_bgcolor=k['paper'], plot_bgcolor=k['plot'], font=dict(family=FONT, color=k['text'], size=12),
+        margin=dict(l=56, r=20, t=16, b=40), hovermode='x unified',
+        hoverlabel=dict(bgcolor=k['paper'], bordercolor=k['axis'], font=dict(color=k['text'], family=FONT)),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, x=0, font=dict(color=k['text']), bgcolor='rgba(0,0,0,0)'),
+        uirevision='constant',
+    )
+    if height:
+        fig.update_layout(height=height)
+    fig.update_xaxes(gridcolor=k['grid'], linecolor=k['axis'], zerolinecolor=k['grid'], tickfont=dict(color=k['muted']))
+    fig.update_yaxes(gridcolor=k['grid'], linecolor=k['axis'], zerolinecolor=k['grid'], tickfont=dict(color=k['muted']),
+                     title_font=dict(color=k['muted']))
+    return fig
 
 
 def downsample(df, time_range_minutes):
@@ -72,56 +116,105 @@ def humidex_score(temp, hum):
     return 0
 
 
-def combined_figure(df, names, time_range_minutes, t):
-    """Eén grafiek per grootheid met een lijn per device."""
-    fig = make_subplots(
-        rows=5, cols=1,
-        subplot_titles=(f'🌡️ {t["temperature"]}', f'💧 {t["humidity"]}', f'💦 {t["dewpoint"]}', f'🌫️ {t["abs_humidity"]}', f'😊 {t["comfort"]}'),
-        vertical_spacing=0.08
-    )
-    metrics = [('temperature', '°C', '.1f'), ('humidity', '%', '.1f'), ('dewpoint', '°C', '.1f'),
-               ('absolute_humidity', 'g/m³', '.1f'), ('comfort_score', '', '')]
-    for index, (device_id, name) in enumerate(names.items()):
+def metric_figure(df, names, colors, metric, time_range_minutes, t, mode):
+    """Eén grootheid, één lijn per sensor (of één sensor), in de kleuren van het thema."""
+    fig = go.Figure()
+    unit = METRIC_UNITS[metric]
+    for device_id, name in names.items():
         group = df[df['device_id'] == device_id].drop(columns='device_id')
         if group.empty:
             continue
         group = downsample(group, time_range_minutes)
-        group['comfort_score'] = [humidex_score(tmp, hum) for tmp, hum in zip(group['temperature'], group['humidity'])]
-        color = DEVICE_COLORS[index % len(DEVICE_COLORS)]
-        for row, (column, unit, fmt) in enumerate(metrics, start=1):
-            fig.add_trace(go.Scatter(
-                x=group['timestamp'], y=group[column], mode='lines', name=name, legendgroup=str(device_id),
-                showlegend=row == 1, line=dict(color=color, width=2.5),
-                hovertemplate=f'<b>{name}</b>: %{{y:{fmt}}}{unit}<extra></extra>'
-            ), row=row, col=1)
-    for row, title in enumerate([f"{t['temperature']} (°C)", f"{t['humidity']} (%)", f"{t['dewpoint']} (°C)",
-                                 f"{t['abs_humidity']} (g/m³)", t['score']], start=1):
-        fig.update_yaxes(title_text=title, row=row, col=1, showgrid=True, gridcolor='rgba(0,0,0,0.05)')
-    fig.update_yaxes(range=[0, 100], row=2, col=1)
-    fig.update_yaxes(range=[-0.5, 6.5], tickmode='linear', tick0=0, dtick=1, row=5, col=1)
-    fig.update_xaxes(title_text=t['time'], row=5, col=1, showgrid=True, gridcolor='rgba(0,0,0,0.05)')
-    fig.update_layout(
-        height=1100,
-        showlegend=True,
-        legend=dict(orientation='h', yanchor='bottom', y=1.03, xanchor='center', x=0.5),
-        hovermode='x unified',
-        plot_bgcolor='rgba(0,0,0,0.02)',
-        paper_bgcolor='white',
-        margin=dict(l=60, r=30, t=80, b=40),
-        uirevision='constant'
-    )
+        if metric == 'comfort':
+            values = [humidex_score(tmp, hum) for tmp, hum in zip(group['temperature'], group['humidity'])]
+        else:
+            values = group[metric]
+        fig.add_trace(go.Scatter(
+            x=group['timestamp'], y=values, mode='lines', name=name, line=dict(color=colors.get(device_id), width=2),
+            hovertemplate=f'<b>{name}</b>: %{{y:.1f}} {unit}<extra></extra>' if metric != 'comfort'
+            else f'<b>{name}</b>: %{{y}}<extra></extra>'))
+    style_figure(fig, mode)
+    fig.update_layout(showlegend=len(fig.data) > 1)
+    title = t[METRIC_KEYS[metric]] + (f' ({unit})' if unit else '')
+    fig.update_yaxes(title_text=title)
+    if metric == 'humidity':
+        fig.update_yaxes(range=[0, 100])
+    if metric == 'comfort':
+        fig.update_yaxes(range=[-0.5, 6.5], tickmode='linear', tick0=0, dtick=1)
     return fig
 
 
+def theme_mollier(fig, mode, point_color=None):
+    """Mollier diagram in de stijl van het thema: gedempte RV-lijnen, comfortzone, punten in sensorkleur."""
+    k = THEMES[mode]
+    for trace in fig.data:
+        if getattr(trace, 'fill', None) == 'toself':
+            trace.fillcolor = 'rgba(12, 163, 12, 0.14)'
+            trace.line.color = k['ok']
+        elif trace.mode == 'markers+text':
+            trace.marker.line.color = k['plot']
+            trace.textfont.family = FONT
+            if point_color and trace.marker.color in ('#e74c3c',):
+                trace.marker.color = point_color
+                trace.textfont.color = k['text']
+        elif trace.line is not None and trace.line.dash == 'dash':
+            trace.line.color = k['axis']
+        else:
+            trace.line.color = k['muted']
+    style_figure(fig, mode, height=520)
+    fig.update_layout(title=None, hovermode='closest', margin=dict(l=60, r=20, t=30, b=50),
+                      legend=dict(bordercolor=k['grid'], borderwidth=1))
+    return fig
+
+
+def sparkline_svg(values, color, width=120, height=28):
+    """Kleine trendlijn als SVG data-URI (geen extra grafiek-componenten per rij)."""
+    values = [v for v in values if v is not None and not pd.isna(v)]
+    if len(values) < 2:
+        return None
+    lo, hi = min(values), max(values)
+    span = (hi - lo) or 1
+    step = width / (len(values) - 1)
+    points = ' '.join(f'{i * step:.1f},{height - 3 - (v - lo) / span * (height - 6):.1f}' for i, v in enumerate(values))
+    svg = (f"<svg xmlns='http://www.w3.org/2000/svg' width='{width}' height='{height}' viewBox='0 0 {width} {height}'>"
+           f"<polyline points='{points}' fill='none' stroke='{color}' stroke-width='1.5' stroke-linejoin='round'/></svg>")
+    return 'data:image/svg+xml;utf8,' + svg.replace('#', '%23')
+
+
+_spark_cache = {'at': 0, 'data': {}}
+
+
+def sparkline_data():
+    """Temperatuur van de laatste 24 uur per sensor (kwartiergemiddelden), 60 s gecachet."""
+    now = datetime.now().timestamp()
+    if now - _spark_cache['at'] < 60:
+        return _spark_cache['data']
+    data = {}
+    conn = sqlite3.connect(DB_FILE)
+    try:
+        query, _ = build_union_query(conn.cursor(), ['timestamp', 'temperature', 'device_id'], start_timestamp=int(now - 86400))
+        if query:
+            df = pd.read_sql_query(query, conn)
+            if not df.empty:
+                df['bucket'] = df['timestamp'] // 900
+                for device_id, group in df.groupby('device_id'):
+                    data[int(device_id)] = group.groupby('bucket')['temperature'].mean().tolist()
+    finally:
+        conn.close()
+    _spark_cache.update(at=now, data=data)
+    return data
+
+
 def latest_per_device():
-    """Laatste meting per device uit de twee meest recente dagtabellen: {device_id: (ts, temp, rh, dauwpunt)}"""
+    """Laatste meting per device uit de twee meest recente dagtabellen: {device_id: (ts, temp, rh, dauwpunt, abs)}"""
     conn = sqlite3.connect(DB_FILE)
     try:
         latest = {}
         for table in get_all_measurement_tables(conn.cursor())[-2:]:
-            for device_id, ts, temp, hum, dew in conn.execute(
-                    f'SELECT device_id, MAX(timestamp), temperature, humidity, dewpoint FROM {table} GROUP BY device_id'):
-                latest[device_id] = (ts, temp, hum, dew)
+            for device_id, ts, temp, hum, dew, ah in conn.execute(
+                    f'SELECT device_id, MAX(timestamp), temperature, humidity, dewpoint, absolute_humidity '
+                    f'FROM {table} GROUP BY device_id'):
+                latest[device_id] = (ts, temp, hum, dew, ah)
         return latest
     finally:
         conn.close()
@@ -132,444 +225,90 @@ def register_callbacks(app):
     
     @app.callback(
         [Output('selected-language', 'data'),
-         Output('page-title', 'children'),
-         Output('label-temperature', 'children'),
-         Output('label-humidity', 'children'),
-         Output('label-dewpoint', 'children'),
-         Output('label-abs-humidity', 'children'),
-         Output('label-comfort', 'children'),
-         Output('label-score', 'children'),
-         Output('label-time-period', 'children'),
-         Output('label-database', 'children'),
-         Output('tooltip-content', 'children'),
+         Output('brand', 'children'),
+         Output('main-tabs', 'options'),
+         Output('view-toggle', 'options'),
+         Output('metric-tabs', 'options'),
          Output('time-range-dropdown', 'options'),
          Output('label-psychrometric-chart', 'children'),
-         Output('label-time-position', 'children'),
-         Output('tab-dashboard', 'label'),
-         Output('tab-settings', 'label'),
-         Output('label-device', 'children')],
+         Output('label-time-position', 'children')],
         [Input('language-selector', 'value')]
     )
     def update_language(lang):
         """Update alle labels op basis van geselecteerde taal"""
-        try:
-            print(f"🌐 Language changed to: {lang}")  # Debug
-            if lang is None or lang not in TRANSLATIONS:
-                lang = 'en'
-                print(f"⚠️ Invalid language, defaulting to: {lang}")
-            t = TRANSLATIONS[lang]
-        except Exception as e:
-            print(f"❌ Error in update_language: {e}")
-            import traceback
-            traceback.print_exc()
-            # Fallback to English
+        if lang is None or lang not in TRANSLATIONS:
             lang = 'en'
-            t = TRANSLATIONS[lang]
-        
-        # Tooltip content met vertalingen
-        tooltip_content = html.Div([
-            html.Strong(f"{t['score_explanation']}:"),
-            html.Br(),
-            f"0 = {t['comfort_0']}",
-            html.Br(),
-            f"1 = {t['comfort_1']}",
-            html.Br(),
-            f"2 = {t['comfort_2']}",
-            html.Br(),
-            f"3 = {t['comfort_3']}",
-            html.Br(),
-            f"4 = {t['comfort_4']}",
-            html.Br(),
-            f"5 = {t['comfort_5']}",
-            html.Br(),
-            f"6 = {t['comfort_6']}"
-        ])
-        
-        # Dropdown opties met vertalingen
-        dropdown_options = [
-            {'label': t['last_1min'], 'value': 1},
-            {'label': t['last_5min'], 'value': 5},
-            {'label': t['last_15min'], 'value': 15},
-            {'label': t['last_30min'], 'value': 30},
-            {'label': t['last_1hour'], 'value': 60},
-            {'label': t['last_6hours'], 'value': 360},
-            {'label': t['last_12hours'], 'value': 720},
-            {'label': t['last_24hours'], 'value': 1440},
-            {'label': t['last_7days'], 'value': 10080},
-            {'label': t['last_14days'], 'value': 20160},
-            {'label': t['last_1month'], 'value': 43200},
-            {'label': t['last_3months'], 'value': 129600},
-            {'label': t['last_6months'], 'value': 259200},
-            {'label': t['all_data'], 'value': -1}
-        ]
-        
-        return (
-            lang,
-            t['title'],
-            t['temperature'],
-            t['humidity'],
-            t['dewpoint'],
-            t['abs_humidity'],
-            t['comfort'],
-            t['score'] + ': ',
-            t['time_period'],
-            t['database'],
-            tooltip_content,
-            dropdown_options,
-            f"📐 {t['psychrometric_chart']}",
-            t['time_position'],
-            t['tab_dashboard'],
-            t['tab_settings'],
-            t['lbl_device_select']
-        )
-    
+        t = TRANSLATIONS[lang]
+        return (lang, t['app_name'], layout.nav_options(t), layout.view_options(t), layout.metric_options(t),
+                layout.range_options(t), t['psychrometric_chart'], t['time_position'])
+
+    @app.callback(
+        [Output('page-dashboard', 'style'),
+         Output('page-settings', 'style')],
+        Input('main-tabs', 'value')
+    )
+    def show_page(tab):
+        if tab == 'settings':
+            return {'display': 'none'}, {}
+        return {}, {'display': 'none'}
+
+    @app.callback(
+        Output('app-root', 'className'),
+        Input('main-tabs', 'value'),
+        prevent_initial_call=True
+    )
+    def apply_theme(tab):
+        """Thema uit Settings direct toepassen (ook na opslaan)"""
+        return f'theme-{theme_mode()}'
+
     @app.callback(
         [Output('live-graph', 'figure'),
          Output('data-count', 'children'),
-         Output('current-temp', 'children'),
-         Output('current-humidity', 'children'),
-         Output('current-dewpoint', 'children'),
-         Output('current-abs-humidity', 'children'),
-         Output('comfort-level', 'children'),
-         Output('comfort-score', 'children'),
-         Output('comfort-icon', 'children'),
-         Output('graph-relayout-data', 'data'),
-         Output('current-cards', 'style')],
+         Output('graph-relayout-data', 'data')],
         [Input('graph-update', 'n_intervals'),
          Input('time-range-dropdown', 'value'),
          Input('live-graph', 'relayoutData'),
          Input('selected-language', 'data'),
-         Input('device-selector', 'value')],
-        [State('graph-relayout-data', 'data')]
+         Input('device-selector', 'value'),
+         Input('metric-tabs', 'value')],
+        [State('graph-relayout-data', 'data'),
+         State('main-tabs', 'value')]
     )
-    def update_graph(n, time_range_minutes, relayout_data, lang, device_sel, stored_relayout):
-        """Update grafieken en metingen op basis van tijdsbereik"""
-        if lang is None:
-            lang = 'nl'
-        
-        t = TRANSLATIONS[lang]
-        
-        def get_comfort_level(temp, humidity):
-            """Bepaal comfort level op basis van Humidex"""
-            # Bereken Humidex
-            # Eerst dauwpunt berekenen
-            dewpoint = temp - ((100 - humidity) / 5.0)
-            dewpoint_kelvin = dewpoint + 273.15
-            
-            # Dampdrukverzadiging bij dauwpunt
-            e = 6.11 * math.exp(5417.7530 * ((1/273.16) - (1/dewpoint_kelvin)))
-            
-            # Humidex formule
-            humidex = temp + 0.5555 * (e - 10)
-            
-            # Comfort classificatie op basis van Humidex ranges
-            # Bron: Environment Canada Humidex schaal
-            if humidex < 20:
-                return t['comfort_0'], 0, "🥶", humidex  # Te koud
-            elif humidex < 27:
-                return t['comfort_4'], 4, "🙂", humidex  # Comfortabel koel
-            elif humidex < 30:
-                return t['comfort_5'], 5, "😊", humidex  # Comfortabel
-            elif humidex < 35:
-                return t['comfort_6'], 6, "✨", humidex  # Optimaal comfortabel
-            elif humidex < 40:
-                return t['comfort_3'], 3, "😓", humidex  # Enig ongemak
-            elif humidex < 46:
-                return t['comfort_2'], 2, "😟", humidex  # Veel ongemak, vermijd fysieke inspanning
-            elif humidex < 54:
-                return t['comfort_1'], 1, "🔥", humidex  # Gevaarlijk - hittekrampen mogelijk
-            else:
-                return t['comfort_0'], 0, "⚠️", humidex  # Heatstroke dreigend
-        
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        
-        # Haal totaal aantal metingen op (som over alle tabellen)
-        tables = get_all_measurement_tables(cursor)
-        total_count = 0
-        for table in tables:
-            result = cursor.execute(f'SELECT COUNT(*) FROM {table}').fetchone()
-            total_count += result[0] if result else 0
-        
-        # Bepaal tijdsfilter en bouw query (0 = alle devices gecombineerd)
-        combined = not device_sel
-        device_filter = None if combined else int(device_sel)
-        columns = ['timestamp', 'temperature', 'humidity', 'dewpoint', 'absolute_humidity'] + (['device_id'] if combined else [])
-        
-        if time_range_minutes == -1:
-            # Alle data
-            query, table_count = build_union_query(cursor, columns, device_id=device_filter)
-            if settings.get('debug_logging'):
-                print(f"📊 Query voor ALLE data - aantal tabellen: {table_count}")
-        else:
-            # Filter op tijdsbereik
-            cutoff_time = datetime.now() - timedelta(minutes=time_range_minutes)
-            cutoff_timestamp = int(cutoff_time.timestamp())
-            if settings.get('debug_logging'):
-                print(f"📊 Query voor laatste {time_range_minutes} minuten (vanaf {cutoff_time.strftime('%Y-%m-%d %H:%M:%S')})")
-            query, table_count = build_union_query(cursor, columns, start_timestamp=cutoff_timestamp, device_id=device_filter)
-            if settings.get('debug_logging'):
-                print(f"   → Aantal relevante tabellen: {table_count}")
-        
-        if query:
-            df = pd.read_sql_query(query, conn)
-            if settings.get('debug_logging'):
-                print(f"   → Opgehaalde datapunten: {len(df)}")
-        else:
-            df = pd.DataFrame(columns=columns)
-            if settings.get('debug_logging'):
-                print("   ⚠️ Geen query gegenereerd (geen relevante tabellen)")
-        
-        conn.close()
-        
-        # Update stored relayout data als er nieuwe zoom/pan data is
-        if relayout_data and isinstance(relayout_data, dict) and any(key.startswith(('xaxis', 'yaxis')) for key in relayout_data.keys()):
+    def update_graph(n, time_range_minutes, relayout_data, lang, device_sel, metric, stored_relayout, tab):
+        """Grafiek van één grootheid: één lijn per sensor of alleen de gekozen sensor"""
+        if tab == 'settings' and callback_context.triggered_id == 'graph-update':
+            return no_update, no_update, no_update
+        t = TRANSLATIONS.get(lang) or TRANSLATIONS['en']
+        mode = theme_mode()
+        metric = metric or 'temperature'
+        time_range_minutes = time_range_minutes or 1440
+        if relayout_data and isinstance(relayout_data, dict) and any(key.startswith(('xaxis', 'yaxis')) for key in relayout_data):
             stored_relayout = relayout_data
-        
-        cards_style = {**CARDS_STYLE, 'display': 'none'} if combined else CARDS_STYLE
+
+        conn = sqlite3.connect(DB_FILE)
+        try:
+            cursor = conn.cursor()
+            device_filter = int(device_sel) if device_sel else None
+            columns = ['timestamp', 'temperature', 'humidity', 'dewpoint', 'absolute_humidity', 'device_id']
+            start = None if time_range_minutes == -1 else int((datetime.now() - timedelta(minutes=time_range_minutes)).timestamp())
+            query, _ = build_union_query(cursor, columns, start_timestamp=start, device_id=device_filter)
+            df = pd.read_sql_query(query, conn) if query else pd.DataFrame(columns=columns)
+        finally:
+            conn.close()
+
+        names = {d['id']: d['name'] for d in devices.list_devices() if not device_filter or d['id'] == device_filter}
+        count_text = f"{len(df)} {t['measurements']} · {t[METRIC_KEYS[metric]]}"
         if df.empty:
-            return go.Figure(), f"{total_count} {t['measurements']}", "-- °C", "-- %", "-- °C", "-- g/m³", t['no_data'], "--", "❓", stored_relayout, cards_style
-        
-        # Converteer integer timestamps naar datetime objecten (lokale tijd)
+            fig = style_figure(go.Figure(), mode)
+            fig.add_annotation(text=t['no_data'], showarrow=False, font=dict(color=THEMES[mode]['muted'], size=14),
+                               xref='paper', yref='paper', x=0.5, y=0.5)
+            fig.update_xaxes(visible=False)
+            fig.update_yaxes(visible=False)
+            return fig, count_text, stored_relayout
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s').dt.tz_localize('UTC').dt.tz_convert(settings.get('timezone')).dt.tz_localize(None)
-        
-        if combined:
-            names = {d['id']: d['name'] for d in devices.list_devices()}
-            fig = combined_figure(df, names, time_range_minutes, t)
-            return fig, f"📊 {total_count} {t['measurements']}", "-- °C", "-- %", "-- °C", "-- g/m³", "", "--", "", stored_relayout, cards_style
-        
-        df = downsample(df, time_range_minutes)
-        
-        df['timestamp_formatted'] = df['timestamp'].dt.strftime('%d-%m-%Y %H:%M:%S')
-        
-        # Haal laatste waarden op
-        latest_temp = df['temperature'].iloc[-1]
-        latest_humidity = df['humidity'].iloc[-1]
-        latest_dewpoint = df['dewpoint'].iloc[-1] if 'dewpoint' in df.columns else latest_temp - ((100 - latest_humidity) / 5.0)
-        
-        # Bereken absolute humidity als die niet in database zit
-        if 'absolute_humidity' in df.columns:
-            latest_abs_humidity = df['absolute_humidity'].iloc[-1]
-        else:
-            latest_abs_humidity = (6.112 * math.exp((17.67 * latest_temp) / (latest_temp + 243.5)) * latest_humidity * 2.1674) / (273.15 + latest_temp)
-        
-        # Bereken comfort score voor elk datapunt
-        comfort_debug_counter = [0]  # Mutable counter voor closure
-        
-        def calculate_comfort_score(temp, hum):
-            """Bereken comfort score op basis van Humidex"""
-            try:
-                # Check voor NaN waarden
-                if pd.isna(temp) or pd.isna(hum):
-                    return None
-                
-                dewpoint = temp - ((100 - hum) / 5.0)
-                dewpoint_kelvin = dewpoint + 273.15
-                e = 6.11 * math.exp(5417.7530 * ((1/273.16) - (1/dewpoint_kelvin)))
-                humidex = temp + 0.5555 * (e - 10)
-                
-                if humidex < 20:
-                    score = 0
-                elif humidex < 27:
-                    score = 4
-                elif humidex < 30:
-                    score = 5
-                elif humidex < 35:
-                    score = 6
-                elif humidex < 40:
-                    score = 3
-                elif humidex < 46:
-                    score = 2
-                elif humidex < 54:
-                    score = 1
-                else:
-                    score = 0
-                
-                # Debug output alleen voor eerste 5 punten
-                if settings.get('debug_logging') and comfort_debug_counter[0] < 5:
-                    print(f"   Debug comfort #{comfort_debug_counter[0]+1}: T={temp:.1f}°C, RH={hum:.1f}%, Humidex={humidex:.1f}, Score={score}")
-                    comfort_debug_counter[0] += 1
-                
-                return score
-            except Exception as e:
-                if settings.get('debug_logging'):
-                    print(f"   Error calculating comfort score: {e}")
-                return None
-        
-        # Bereken comfort scores voor alle datapunten
-        df['comfort_score'] = df.apply(lambda row: calculate_comfort_score(row['temperature'], row['humidity']), axis=1)
-        
-        # Maak subplots
-        fig = make_subplots(
-            rows=5, cols=1,
-            subplot_titles=(f'🌡️ {t["temperature"]}', f'💧 {t["humidity"]}', f'💦 {t["dewpoint"]}', f'🌫️ {t["abs_humidity"]}', f'😊 {t["comfort"]}'),
-            vertical_spacing=0.08
-        )
-        
-        fig.add_trace(
-            go.Scatter(
-                x=df['timestamp'], 
-                y=df['temperature'],
-                mode='lines',
-                name=t['temperature'],
-                line=dict(color='#3498db', width=2.5),
-                fill='tozeroy',
-                fillcolor='rgba(52, 152, 219, 0.1)',
-                hovertemplate='<b>%{y:.1f}°C</b><br>%{customdata}<extra></extra>',
-                customdata=df['timestamp_formatted']
-            ),
-            row=1, col=1
-        )
-        
-        fig.add_trace(
-            go.Scatter(
-                x=df['timestamp'], 
-                y=df['humidity'], 
-                mode='lines',
-                name=t['humidity'],
-                line=dict(color='#e74c3c', width=2.5),
-                fill='tozeroy',
-                fillcolor='rgba(231, 76, 60, 0.1)',
-                hovertemplate='<b>%{y:.1f}%</b><br>%{customdata}<extra></extra>',
-                customdata=df['timestamp_formatted']
-            ),
-            row=2, col=1
-        )
-        
-        fig.add_trace(
-            go.Scatter(
-                x=df['timestamp'], 
-                y=df['dewpoint'] if 'dewpoint' in df.columns else df['temperature'] - ((100 - df['humidity']) / 5.0), 
-                mode='lines',
-                name=t['dewpoint'],
-                line=dict(color='#9b59b6', width=2.5),
-                fill='tozeroy',
-                fillcolor='rgba(155, 89, 182, 0.1)',
-                hovertemplate='<b>%{y:.1f}°C</b><br>%{customdata}<extra></extra>',
-                customdata=df['timestamp_formatted']
-            ),
-            row=3, col=1
-        )
-        
-        # Bereken absolute humidity voor grafiek als niet aanwezig
-        if 'absolute_humidity' in df.columns:
-            abs_hum_data = df['absolute_humidity']
-        else:
-            # Correcte formule voor absolute vochtigheid
-            abs_hum_data = (6.112 * df['temperature'].apply(lambda temp: math.exp((17.67 * temp) / (temp + 243.5))) * df['humidity'] * 2.1674) / (273.15 + df['temperature'])
-        
-        fig.add_trace(
-            go.Scatter(
-                x=df['timestamp'], 
-                y=abs_hum_data,
-                mode='lines',
-                name=t['abs_humidity'],
-                line=dict(color='#16a085', width=2.5),
-                fill='tozeroy',
-                fillcolor='rgba(22, 160, 133, 0.1)',
-                hovertemplate='<b>%{y:.1f}g/m³</b><br>%{customdata}<extra></extra>',
-                customdata=df['timestamp_formatted']
-            ),
-            row=4, col=1
-        )
-        
-        # Comfort score grafiek met kleurcodering
-        fig.add_trace(
-            go.Scatter(
-                x=df['timestamp'], 
-                y=df['comfort_score'], 
-                mode='lines',
-                name=t['comfort'],
-                line=dict(color='#f39c12', width=2.5),
-                fill='tozeroy',
-                fillcolor='rgba(243, 156, 18, 0.1)',
-                hovertemplate='<b>Score: %{y}</b><br>%{customdata}<extra></extra>',
-                customdata=df['timestamp_formatted']
-            ),
-            row=5, col=1
-        )
-        
-        # Bereken dynamische Y-axis ranges met padding
-        temp_min, temp_max = df['temperature'].min(), df['temperature'].max()
-        temp_range = [max(0, temp_min - 5), temp_max + 5]
-        
-        hum_range = [0, 100]  # Humidity blijft altijd 0-100%
-        
-        dewpoint_data = df['dewpoint'] if 'dewpoint' in df.columns else df['temperature'] - ((100 - df['humidity']) / 5.0)
-        dew_min, dew_max = dewpoint_data.min(), dewpoint_data.max()
-        dew_range = [max(0, dew_min - 5), dew_max + 5]
-        
-        abs_min, abs_max = abs_hum_data.min(), abs_hum_data.max()
-        abs_range = [max(0, abs_min - 2), abs_max + 2]
-        
-        fig.update_xaxes(
-            title_text=t['time'], 
-            row=5, col=1,
-            showgrid=True,
-            gridcolor='rgba(0,0,0,0.05)'
-        )
-        fig.update_yaxes(
-            title_text=f"{t['temperature']} (°C)", 
-            row=1, col=1,
-            showgrid=True,
-            gridcolor='rgba(0,0,0,0.05)',
-            range=temp_range
-        )
-        fig.update_yaxes(
-            title_text=f"{t['humidity']} (%)", 
-            row=2, col=1,
-            showgrid=True,
-            gridcolor='rgba(0,0,0,0.05)',
-            range=hum_range
-        )
-        fig.update_yaxes(
-            title_text=f"{t['dewpoint']} (°C)", 
-            row=3, col=1,
-            showgrid=True,
-            gridcolor='rgba(0,0,0,0.05)',
-            range=dew_range
-        )
-        fig.update_yaxes(
-            title_text=f"{t['abs_humidity']} (g/m³)", 
-            row=4, col=1,
-            showgrid=True,
-            gridcolor='rgba(0,0,0,0.05)',
-            range=abs_range
-        )
-        fig.update_yaxes(
-            title_text=t['score'], 
-            row=5, col=1,
-            showgrid=True,
-            gridcolor='rgba(0,0,0,0.05)',
-            range=[-0.5, 6.5],
-            tickmode='linear',
-            tick0=0,
-            dtick=1
-        )
-        
-        fig.update_layout(
-            height=1100,
-            showlegend=False,
-            hovermode='x unified',
-            plot_bgcolor='rgba(0,0,0,0.02)',
-            paper_bgcolor='white',
-            margin=dict(l=60, r=30, t=50, b=40),
-            hoverlabel=dict(
-                bgcolor="white",
-                font_size=14,
-                font_family="Arial, sans-serif",
-                font_color="#2c3e50",
-                bordercolor="#2c3e50",
-                align="left"
-            ),
-            uirevision='constant'  # Behoud UI state (zoom/pan) tussen updates
-        )
-        
-        # Bepaal comfort level (retourneert nu ook humidex)
-        comfort_text, comfort_score, comfort_icon, humidex = get_comfort_level(latest_temp, latest_humidity)
-        
-        return fig, f"📊 {total_count} {t['measurements']}", f"{latest_temp:.1f} °C", f"{latest_humidity:.1f} %", f"{latest_dewpoint:.1f} °C", f"{latest_abs_humidity:.1f} g/m³", comfort_text, str(comfort_score), comfort_icon, stored_relayout, cards_style
-    
+        fig = metric_figure(df, names, device_colors(mode), metric, time_range_minutes, t, mode)
+        return fig, count_text, stored_relayout
+
     # Callback voor psychrometric chart
     @app.callback(
         Output('psychrometric-chart', 'figure'),
@@ -582,38 +321,16 @@ def register_callbacks(app):
         if lang is None:
             lang = 'nl'
         
-        if not device_sel:
-            latest = latest_per_device()
-            points = [(d['name'], latest[d['id']][1], latest[d['id']][2], DEVICE_COLORS[i % len(DEVICE_COLORS)])
-                      for i, d in enumerate(devices.list_devices()) if d['id'] in latest]
-            return add_device_points(create_psychrometric_chart(None, None, lang), points)
-        
-        # Haal laatste meting op uit database
-        try:
-            conn = sqlite3.connect(DB_FILE)
-            cursor = conn.cursor()
-            
-            # Zoek in meest recente tabel (laatste in lijst)
-            tables = get_all_measurement_tables(cursor)
-            if tables:
-                latest_table = tables[-1]  # Laatste tabel (meest recente datum)
-                query = f'SELECT temperature, humidity FROM {latest_table} WHERE device_id = {int(device_sel)} ORDER BY timestamp DESC LIMIT 1'
-                df = pd.read_sql_query(query, conn)
-            else:
-                df = pd.DataFrame(columns=['temperature', 'humidity'])
-            
-            conn.close()
-            
-            if not df.empty:
-                current_temp = df['temperature'].iloc[0]
-                current_rh = df['humidity'].iloc[0]
-                return create_psychrometric_chart(current_temp, current_rh, lang)
-            else:
-                # Geen data beschikbaar - toon leeg diagram
-                return create_psychrometric_chart(None, None, lang)
-        except Exception as e:
-            print(f"Fout bij updaten psychrometric chart: {e}")
-            return create_psychrometric_chart(None, None, lang)
+        mode = theme_mode()
+        colors = device_colors(mode)
+        latest = latest_per_device()
+        chosen = [d for d in devices.list_devices() if d['id'] in latest and (not device_sel or d['id'] == device_sel)]
+        points = [(d['name'], latest[d['id']][1], latest[d['id']][2], colors.get(d['id'])) for d in chosen]
+        fig = theme_mollier(add_device_points(create_psychrometric_chart(None, None, lang), points), mode)
+        coldest = min((p[1] for p in points if p[1] is not None), default=0)
+        if coldest < 0:
+            fig.update_xaxes(range=[coldest - 3, 40])  # punten onder 0 °C zichtbaar houden
+        return fig
     
     # Callback voor modal open/close
     @app.callback(
@@ -867,7 +584,7 @@ def register_callbacks(app):
         
         # Check of er data is
         if stored_data is None or current_value is None:
-            return t['no_data_in_range'], create_psychrometric_chart(None, None, lang)
+            return t['no_data_in_range'], theme_mollier(create_psychrometric_chart(None, None, lang), theme_mode())
         
         try:
             # Haal data op uit store
@@ -877,7 +594,7 @@ def register_callbacks(app):
             
             # Valideer slider waarde
             if current_value < 0 or current_value >= len(timestamps):
-                return t['no_data_in_range'], create_psychrometric_chart(None, None, lang)
+                return t['no_data_in_range'], theme_mollier(create_psychrometric_chart(None, None, lang), theme_mode())
             
             # Haal geselecteerd datapunt op
             selected_timestamp = timestamps[current_value]
@@ -886,16 +603,17 @@ def register_callbacks(app):
             
             # Format timestamp voor display
             dt = pd.to_datetime(selected_timestamp)
-            timestamp_display = f"📅 {dt.strftime('%d-%m-%Y %H:%M:%S')}"
+            timestamp_display = dt.strftime('%d-%m-%Y %H:%M:%S')
             
             # Creëer aangepast psychrometric chart met historisch punt
-            fig = create_psychrometric_chart_historical(selected_temp, selected_humidity, lang, t['historical_condition'])
+            fig = theme_mollier(create_psychrometric_chart_historical(selected_temp, selected_humidity, lang, t['historical_condition']),
+                                theme_mode(), point_color=THEMES[theme_mode()]['text'])
             
             return timestamp_display, fig
             
         except Exception as e:
             print(f"Fout bij updaten historische view: {e}")
-            return t['no_data_in_range'], create_psychrometric_chart(None, None, lang)
+            return t['no_data_in_range'], theme_mollier(create_psychrometric_chart(None, None, lang), theme_mode())
 
     @app.callback(
         Output('device-selector', 'options'),
@@ -921,49 +639,131 @@ def register_callbacks(app):
         """Historische replay werkt per device"""
         t = TRANSLATIONS.get(lang) or TRANSLATIONS['en']
         if device_sel:
-            return {'textAlign': 'center', 'marginBottom': '20px'}, '', no_update
+            return {}, '', no_update
         return {'display': 'none'}, t['hint_select_device_history'], {'display': 'none'}
 
-    @app.callback(
-        Output('device-overview', 'children'),
-        [Input('graph-update', 'n_intervals'),
-         Input('selected-language', 'data'),
-         Input('device-selector', 'value')]
-    )
-    def update_device_overview(n, lang, device_sel):
-        """Kaart per device met actuele waarden en online/offline status"""
-        if n and n % 2 and callback_context.triggered_id == 'graph-update':
-            return no_update
-        t = TRANSLATIONS.get(lang) or TRANSLATIONS['en']
+    def sensor_states(t):
+        """Actuele toestand per actieve sensor voor bord, meters en samenvatting."""
         latest = latest_per_device()
         offline_after = max(3 * settings.get('poll_interval_seconds'), 30)
         now = datetime.now().timestamp()
-        cards = []
-        for index, device in enumerate(devices.list_devices(enabled_only=True)):
-            ts, temp, hum, dew = latest.get(device['id'], (None, None, None, None))
-            online = ts is not None and now - ts <= offline_after
-            error = devices.status(device['id']).get('error')
-            color = DEVICE_COLORS[index % len(DEVICE_COLORS)]
+        states = []
+        for device in devices.list_devices(enabled_only=True):
+            config = next((d for d in devices.load_config()[1] if d['id'] == device['id']), {})
+            ts, temp, hum, dew, ah = latest.get(device['id'], (None,) * 5)
             if ts is None:
-                state = t['status_never']
-            elif online:
-                state = f"🟢 {t['online']}"
+                status, phases = 'never', {}
+            elif now - ts > offline_after:
+                status, phases = 'offline', {}
             else:
-                state = f"🔴 {t['offline']} · {t['last_value'].format(time=datetime.fromtimestamp(ts).strftime('%d-%m %H:%M'))}"
-            cards.append(html.Div([
-                html.Div(device['name'], style={'fontWeight': 'bold', 'color': color, 'fontSize': '16px'}),
-                html.Div(f"#{device['id']}", style={'fontSize': '11px', 'color': '#95a5a6'}),
-                html.Div(f"🌡️ {temp:.1f} °C   💧 {hum:.1f} %   💦 {dew:.1f} °C" if ts is not None else "--",
-                         style={'fontSize': '15px', 'margin': '6px 0', 'color': '#2c3e50', 'whiteSpace': 'pre'}),
-                html.Div(state, style={'fontSize': '12px', 'color': '#27ae60' if online else '#c0392b'}),
-                html.Div(error, style={'fontSize': '11px', 'color': '#c0392b'}) if error and not online else None,
-            ], style={
-                'display': 'inline-block', 'verticalAlign': 'top', 'minWidth': '220px', 'margin': '0 12px 12px 0',
-                'padding': '12px 16px', 'background': 'white', 'borderRadius': '12px',
-                'boxShadow': '0 4px 6px rgba(0,0,0,0.1)', 'borderLeft': f'5px solid {color}',
-                'outline': f'2px solid {color}' if device_sel == device['id'] else 'none'
-            }))
-        return cards
+                status, phases = alerts.device_status(device['id'])
+            if status == 'ok':
+                label, sub = t['st_ok'], t['ago_seconds'].format(n=int(now - ts))
+            elif status in ('alarm', 'warn'):
+                metrics = ', '.join(t[METRIC_KEYS[m]] for m in phases)
+                label = f"{t['st_' + status]} · {metrics}"
+                sub = t['ago_seconds'].format(n=int(now - ts))
+            elif status == 'offline':
+                label, sub = t['st_offline'], t['last_value'].format(time=datetime.fromtimestamp(ts).strftime('%d-%m %H:%M'))
+            else:
+                label, sub = t['st_never'], devices.status(device['id']).get('error') or ''
+            score = humidex_score(temp, hum) if temp is not None else None
+            states.append({
+                'id': device['id'], 'name': device['name'], 'status': status, 'phases': phases, 'label': label,
+                'sub': sub[:80], 'temp': temp, 'hum': hum, 'dew': dew, 'ah': ah,
+                'comfort': t[f'comfort_{score}'] if score is not None else '—',
+                'where': f"{config.get('bus', '')} · #{config.get('slave_id', '')}",
+            })
+        return states
+
+    def value_cell(value, unit, phase=None):
+        cls = 'lcd' + (' is-alarm' if phase == 'alarm' else ' is-warn' if phase == 'pending' else '')
+        text = '— —' if value is None else f'{value:.1f}'
+        return html.Span([text, html.Span(unit, className='u')], className=cls)
+
+    def spark(device_id, color, width=120):
+        src = sparkline_svg(sparkline_data().get(device_id, []), color, width=width)
+        return html.Img(src=src, className='spark', alt='') if src else None
+
+    def render_board(states, colors, t):
+        head = html.Tr([html.Th('', className='bar'), html.Th(t['hdr_sensor']), html.Th(t['temperature']), html.Th(t['humidity']),
+                        html.Th(t['dewpoint'], className='col-wide'), html.Th(t['abs_humidity'], className='col-wide'),
+                        html.Th(t['comfort'], className='col-wide'), html.Th(t['hdr_trend'], className='col-wide'),
+                        html.Th(t['hdr_status'], className='col-status')])
+        rows = []
+        for s_ in states:
+            color = colors.get(s_['id'])
+            ph = s_['phases']
+            rows.append(html.Tr(className='row' + (' is-offline' if s_['status'] in ('offline', 'never') else ''),
+                                style={'--st': f"var(--{ {'never': 'offline'}.get(s_['status'], s_['status'])})"}, children=[
+                html.Td(className='bar'),
+                html.Td([html.Div([html.Span(className='swatch', style={'--series': color}), s_['name']], className='name'),
+                         html.Div(s_['where'], className='where'),
+                         html.Span(s_['label'], className=f"st st-{s_['status']} st-inline")]),
+                html.Td(value_cell(s_['temp'], '°C', ph.get('temperature'))),
+                html.Td(value_cell(s_['hum'], '%', ph.get('humidity'))),
+                html.Td(value_cell(s_['dew'], '°C', ph.get('dewpoint')), className='col-wide'),
+                html.Td(value_cell(s_['ah'], 'g/m³', ph.get('absolute_humidity')), className='col-wide'),
+                html.Td(s_['comfort'], className='comfort col-wide'),
+                html.Td(spark(s_['id'], color), className='col-wide'),
+                html.Td([html.Span(s_['label'], className=f"st st-{s_['status']}"),
+                         html.Span(s_['sub'], className='st-sub')], className='col-status'),
+            ]))
+        return html.Section(className='panel board-wrap', children=html.Table([html.Thead(head), html.Tbody(rows)], className='board'))
+
+    def render_meters(states, colors, t):
+        cards = []
+        for s_ in states:
+            ph = s_['phases']
+            cls = lambda m: 'is-alarm' if ph.get(m) == 'alarm' else 'is-warn' if ph.get(m) == 'pending' else ''
+            fmt = lambda v: '— —' if v is None else f'{v:.1f}'
+            cards.append(html.Div(className='meter' + (' is-offline' if s_['status'] in ('offline', 'never') else ''),
+                                  style={'--st': f"var(--{ {'never': 'offline'}.get(s_['status'], s_['status'])})"}, children=[
+                html.Div(className='meter-head', children=[
+                    html.Div([html.Div([html.Span(className='swatch', style={'--series': colors.get(s_['id'])}), s_['name']], className='name'),
+                              html.Div(s_['where'], className='where')]),
+                    html.Span(s_['label'], className=f"st st-{s_['status']}"),
+                ]),
+                html.Div(className='meter-display', children=[
+                    html.Div([fmt(s_['temp']), html.Span('°C', className='u')], className='v1 ' + cls('temperature')),
+                    html.Div([fmt(s_['hum']), html.Span('% RH', className='u')], className='v2 ' + cls('humidity')),
+                ]),
+                html.Div(className='meter-stats', children=[
+                    html.Span(f"{t['dewpoint']} {fmt(s_['dew'])} °C"),
+                    html.Span(f"{fmt(s_['ah'])} g/m³"),
+                    html.Span(s_['sub']),
+                ]),
+                spark(s_['id'], colors.get(s_['id']), width=300),
+            ]))
+        return html.Div(cards, className='meters')
+
+    @app.callback(
+        [Output('device-overview', 'children'),
+         Output('status-summary', 'children')],
+        [Input('graph-update', 'n_intervals'),
+         Input('selected-language', 'data'),
+         Input('view-toggle', 'value')],
+        State('main-tabs', 'value')
+    )
+    def update_device_overview(n, lang, view, tab):
+        """Bord of meters met actuele waarden en status per sensor, plus samenvatting in de kopbalk"""
+        if callback_context.triggered_id == 'graph-update' and (n % 2 or tab == 'settings'):
+            return no_update, no_update
+        t = TRANSLATIONS.get(lang) or TRANSLATIONS['en']
+        states = sensor_states(t)
+        colors = device_colors(theme_mode())
+        counts = {k: sum(1 for s_ in states if s_['status'] == k) for k in ('alarm', 'warn', 'offline')}
+        summary = [t['summary_sensors'].format(n=len(states))]
+        if counts['alarm']:
+            summary += [' · ', html.Span(t['summary_alarm'].format(n=counts['alarm']), className='n-alarm')]
+        if counts['warn']:
+            summary += [' · ', html.Span(t['summary_warn'].format(n=counts['warn']), className='n-warn')]
+        if counts['offline']:
+            summary += [' · ', t['summary_offline'].format(n=counts['offline'])]
+        if not states:
+            return html.Div(t['no_sensors'], className='panel empty'), summary
+        body = render_meters(states, colors, t) if view == 'meters' else render_board(states, colors, t)
+        return body, summary
 
     PRESET_BUTTONS = ['5min', '10min', '30min', '1hour', '2hours', '6hours', '12hours', '24hours', '2days', 'week', 'month']
 

@@ -174,7 +174,16 @@ def _lang():
     return lang if lang in TRANSLATIONS else 'en'
 
 
+LOGIN_THEMES = {
+    'dark': '--bg:#1b1f23;--panel:#24292e;--panel-2:#1f2428;--line:#343a41;--line-strong:#4a525a;--text:#e6e8e3;'
+            '--muted:#a2a9a2;--accent:#6aa8e8;--accent-ink:#0f1a26;--alarm:#e5534b;color-scheme:dark;',
+    'light': '--bg:#e8e9e4;--panel:#f7f7f3;--panel-2:#fbfbf8;--line:#cdd0c9;--line-strong:#a9ada5;--text:#1b1f23;'
+             '--muted:#555c55;--accent:#1f5fa8;--accent-ink:#ffffff;--alarm:#d03b3b;color-scheme:light;',
+}
+
+
 def _page(t, title, prompt, button, error='', repeat=False, status=200):
+    tokens = LOGIN_THEMES.get(settings.get('dashboard_theme'), LOGIN_THEMES['dark'])
     next_url = escape(_safe_next(request.values.get('next')))
     error_html = f'<p class="err">{escape(error)}</p>' if error else ''
     repeat_html = (f'<label>{escape(t["lbl_repeat_password"])}</label>'
@@ -183,20 +192,25 @@ def _page(t, title, prompt, button, error='', repeat=False, status=200):
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{escape(title)}</title>
 <style>
-body {{ font-family: Arial, sans-serif; background: #ecf0f1; margin: 0; padding: 20px; }}
-.box {{ max-width: 380px; margin: 60px auto; background: white; border-radius: 15px; overflow: hidden;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1); }}
-.head {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; }}
-.head h1 {{ margin: 0; font-size: 22px; }}
-form {{ padding: 20px; }}
-label {{ display: block; font-weight: bold; color: #2c3e50; margin: 12px 0 6px; }}
-input {{ width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid #bdc3c7; border-radius: 8px; font-size: 16px; }}
-button {{ width: 100%; margin-top: 20px; padding: 12px; background: #27ae60; color: white; border: none;
-          border-radius: 8px; font-weight: bold; font-size: 16px; cursor: pointer; }}
-.err {{ color: #c0392b; font-weight: bold; }}
-p {{ color: #34495e; }}
+:root {{ {tokens} }}
+body {{ font-family: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif; background: var(--bg); color: var(--text);
+        margin: 0; padding: 20px; }}
+.box {{ max-width: 380px; margin: 72px auto; background: var(--panel); border: 1px solid var(--line); }}
+.head {{ padding: 18px 22px; border-bottom: 1px solid var(--line); }}
+.brand {{ font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }}
+.head h1 {{ margin: 6px 0 0; font-size: 20px; }}
+form {{ padding: 18px 22px 22px; }}
+p {{ color: var(--muted); margin: 0 0 6px; }}
+label {{ display: block; font-weight: 600; margin: 14px 0 6px; }}
+input {{ width: 100%; box-sizing: border-box; padding: 9px 10px; font: inherit; font-size: 16px; color: var(--text);
+         background: var(--panel-2); border: 1px solid var(--line-strong); border-radius: 0; }}
+input:focus-visible, button:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; }}
+button {{ width: 100%; margin-top: 20px; padding: 10px; font: inherit; font-weight: 600; background: var(--accent);
+          color: var(--accent-ink); border: 1px solid var(--accent); cursor: pointer; }}
+button:hover {{ filter: brightness(1.08); }}
+.err {{ color: var(--alarm); font-weight: 600; }}
 </style></head>
-<body><div class="box"><div class="head"><h1>{escape(title)}</h1></div>
+<body><div class="box"><div class="head"><div class="brand">{escape(t["app_name"])}</div><h1>{escape(title)}</h1></div>
 <form method="post">
 <p>{escape(prompt)}</p>{error_html}
 <input type="hidden" name="next" value="{next_url}">
