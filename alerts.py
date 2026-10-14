@@ -220,6 +220,20 @@ def _check_online(device, now):
             send(_t()['alert_online'].format(device=device['name'], time=_now_text(now)))
 
 
+def device_status(device_id):
+    """Alarmstatus van een sensor: ('alarm' | 'warn' | 'ok', {grootheid: fase}).
+
+    'warn' = grens overschreden maar de alarmvertraging loopt nog; 'alarm' = alarm actief.
+    """
+    phases = {metric: state['phase'] for (dev, metric), state in list(_state.items())
+              if dev == device_id and state['phase'] != 'normal'}
+    if 'alarm' in phases.values():
+        return 'alarm', phases
+    if 'pending' in phases.values():
+        return 'warn', phases
+    return 'ok', phases
+
+
 def check_offline(now=None):
     """Meld sensoren die te lang geen geldige meting hebben (periodiek aangeroepen)."""
     minutes = settings.get('alert_offline_minutes')

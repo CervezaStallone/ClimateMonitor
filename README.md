@@ -19,7 +19,9 @@ A professional real-time climate monitoring dashboard application for the XY-MD0
 - **Interactive slider**: Live updates while dragging for smooth historical navigation
 - **Scientific analysis**: Humidex formula according to Environment Canada standard
 - **Multilingual**: 5 languages fully supported (Dutch, English, German, French, Spanish)
-- **Professional UI**: Modern dashboard with gradient header and card-based layout
+- **Two dashboard views**: *Board* (every sensor as one row, all sensors at a glance) or *Meters* (one panel per sensor)
+- **Dark and light theme**: chosen in Settings; layout adapts to phones and tablets
+- **Clear status per sensor**: OK, warning, alarm or offline, with the value that is out of limits highlighted
 - **Zoom persistence**: Graph zoom stays preserved during live updates
 - **Robust**: Extensive input validation and error handling
 - **Multiple sensors and RS-485 buses**: several USB/RS-485 interfaces, each with several Modbus slaves; combined and per-sensor graphs
@@ -30,17 +32,37 @@ A professional real-time climate monitoring dashboard application for the XY-MD0
 
 ### Screenshots
 
-#### Live Graphs
-![Live Graphs](img/EN_graph.png)
-*Real-time monitoring of temperature, humidity, dew point and absolute humidity with automatic updates*
+#### Dashboard: Board view (dark theme)
+![Board view](img/dashboard-board-dark.png)
+*All sensors at a glance: current values, 24-hour trend and status per sensor. Below: one chart with a tab per quantity.*
 
-#### Psychrometric Chart (Mollier)
-![Mollier Diagram](img/EN_mollier_diagram.png)
-*Interactive Mollier diagram with saturation line, RH curves, comfort zone and live indicator*
+#### Dashboard: Meters view (light theme)
+![Meters view](img/dashboard-meters-light.png)
+*One panel per sensor. View and theme are chosen in Settings; the switch at the top changes the view temporarily.*
 
-#### Historical Data Selection
-![Date Picker](img/EN_date_picker.png)
-*Modal with preset buttons and custom date/time picker for historical data analysis*
+#### On a phone
+<p>
+  <img src="img/dashboard-mobile-dark.png" alt="Phone, dark theme" width="300">
+  <img src="img/dashboard-mobile-light.png" alt="Phone, light theme" width="300">
+</p>
+
+#### Mollier diagram
+![Mollier diagram](img/mollier.png)
+*Current state of every sensor in its own colour, with saturation line, RH curves and comfort zone.*
+
+#### Historical replay
+![Historical range](img/history-range.png)
+![Historical replay](img/mollier-history.png)
+*Pick a period for one sensor and drag the timeline to replay its climate in the Mollier diagram.*
+
+#### Settings
+![Settings: display and Modbus](img/settings-modbus.png)
+*Display, Modbus buses and sensors with live status.*
+
+![Settings: limits](img/settings-limits.png)
+*Alarm limits for all sensors or per sensor, alarm delay, hysteresis and the notification log.*
+
+*Screenshots use demonstration data.*
 
 ### Requirements
 
@@ -178,20 +200,22 @@ the script refuses to install from a folder that normal users can modify.
 
 ```
 XY-MD02_WebApp/
-├── app.py                      # Main entry point (45 lines)
+├── app.py                      # Main entry point
 ├── database.py                 # Database operations, partitioning, WAL mode
 ├── modbus_reader.py            # Modbus RTU: one thread per bus, batched database writes
 ├── devices.py                  # Buses and sensors configuration, live status
 ├── alerts.py                   # Limits, alarm state, Telegram/e-mail notifications
 ├── mqtt_publisher.py           # MQTT publishing per sensor
 ├── psychrometric.py            # Mollier diagram generation
-├── callbacks.py                # Dash callbacks (7 functions)
+├── callbacks.py                # Dashboard callbacks (board/meters, chart, Mollier, replay)
 ├── settings.py                 # Settings stored in the database, validation, password reset
 ├── settings_ui.py              # Settings tab
 ├── auth.py                     # Admin password, login sessions, protection
-├── layout.py                   # HTML layout and CSS styling
-├── translations.py             # Multilingual system (NL/EN)
-├── test_app.py                 # Automated test suite (15 tests)
+├── layout.py                   # Page structure, dark/light theme, styling
+├── translations.py             # Texts in NL, EN, DE, FR, ES
+├── test_app.py                 # Automated tests
+├── deploy/                     # Service install scripts (Linux, Windows)
+├── img/                        # README screenshots
 ├── .env                        # Configuration (not in git)
 ├── .env.example                # Example configuration
 ├── requirements.txt            # Python dependencies
@@ -200,6 +224,33 @@ XY-MD02_WebApp/
 └── src/                        # Data directory
     └── modbus_sensor_data.db   # SQLite database (not in git)
 ```
+
+### Using the dashboard
+
+**Status per sensor**
+
+| Status | Meaning |
+|--------|---------|
+| OK | Value received recently and all limits are met |
+| Warning | A limit is exceeded, but the alarm delay is still running (no notification sent yet) |
+| Alarm | A limit has been exceeded for longer than the alarm delay; notifications are sent |
+| Offline | No valid reading for 3 poll intervals (at least 30 seconds); the last reading time is shown |
+
+The value that is out of limits is highlighted in its cell. The top bar shows how many sensors are
+in alarm, warning or offline.
+
+**Views**
+- *Board*: one row per sensor with temperature, humidity, dew point, absolute humidity, comfort,
+  a 24-hour temperature trend and the status. On a phone the less important columns are hidden.
+- *Meters*: one panel per sensor with large values.
+
+Every sensor keeps the same colour everywhere (its marker, trend line, chart line and Mollier point).
+
+**Chart**: choose the quantity with the tabs (temperature, humidity, dew point, absolute humidity,
+comfort), and choose *All sensors (combined)* or a single sensor and the time range on the right.
+
+**Mollier diagram and replay**: shows the current state of all sensors. Select one sensor in the
+chart to enable *Choose range for historical analysis*.
 
 ### Configuration
 
@@ -210,6 +261,7 @@ Open the **Settings** tab in the web app. The first visit asks you to create an 
 
 | Section | Settings |
 |---------|----------|
+| Display | Dashboard view (Board / Meters), theme (Dark / Light) |
 | Modbus buses and sensors | Poll interval, buses (RS-485 interfaces), sensors (Modbus slaves) |
 | Notifications: channels | Telegram bot token and chat ID, SMTP server, sender and recipients, test buttons |
 | MQTT | Broker, port, TLS, login, client ID, topic prefix, publish interval, QoS, retain, test button |
@@ -326,9 +378,12 @@ Only read once, when the setting has never been saved: `DATA_RETENTION_DAYS`, `D
 2. Add the language to `LANGUAGE_NAMES`:
 ```python
 LANGUAGE_NAMES = {
-    'nl': 'Nederlands',
-    'en': 'English',
-    'de': 'Deutsch'  # New!
+    'nl': 'NL',
+    'en': 'EN',
+    'de': 'DE',
+    'fr': 'FR',
+    'es': 'ES',
+    'it': 'IT'  # New!
 }
 ```
 
@@ -346,7 +401,8 @@ TRANSLATIONS = {
 }
 ```
 
-The dropdown will be updated automatically!
+The dropdown will be updated automatically. Every key must exist in every language with the same
+`{placeholders}`; `python test_app.py` and the *Translation Validator* workflow check this.
 
 ### Comfort Score & Humidex
 
@@ -378,8 +434,9 @@ The application displays an interactive **psychrometric chart** with:
 - **Saturation line**: 100% relative humidity curve
 - **RH lines**: 10%, 20%, ..., 90% relative humidity
 - **Comfort zone**: Marked area (20-26°C, 30-60% RH)
-- **Live indicator**: Real-time position of current climate condition (red star)
-- **Historical marker**: Orange marker when using historical replay
+- **Live indicators**: Current condition of every sensor as a star in the sensor's colour
+- **Historical marker**: The replayed moment when using historical replay
+- **Below 0 °C**: The temperature axis extends automatically so cold rooms stay visible
 - **Humidity ratio**: Y-axis shows absolute humidity in g water / kg dry air
 - **Zoom & Pan**: Full Plotly interactivity for detailed analysis
 
@@ -402,8 +459,10 @@ The application offers advanced historical data analysis with two input methods:
 - **Week** - Last week
 - **Month** - Last month
 
+Historical replay works for one sensor: select it in the chart first.
+
 #### **Custom Range** (Precision selection)
-- Click the **"Custom..."** button to open a modal
+- Click **"Choose range for historical analysis"** to open the dialog
 - Choose start date and time (hour:minute)
 - Choose end date and time (hour:minute)
 - Supports same day selection for start and end
@@ -418,8 +477,8 @@ The application offers advanced historical data analysis with two input methods:
 - Timestamp is displayed live in DD-MM HH:MM format
 
 **Usage:**
-1. Click a preset button for quick analysis
-2. Or click "Custom..." for specific date/time selection
+1. Select one sensor in the chart, then click **"Choose range for historical analysis"**
+2. Click a preset button, or enter a specific start and end date/time
 3. Use the slider to navigate through historical data
 4. See how the climate condition changed over time in the Mollier diagram
 
@@ -441,7 +500,7 @@ The application uses advanced SQLite optimizations for multi-year continuous ope
 - PRAGMA synchronous=NORMAL for faster commits
 - PRAGMA temp_store=MEMORY for temporary data in RAM
 - Batch inserts: 30-measurement buffer (30 seconds)
-- Persistent connection pooling in Modbus thread
+- One writer thread for all buses with a persistent connection
 - 97% reduction in write transactions (86k/day → 2.9k/day)
 
 **Storage Optimizations:**
@@ -465,9 +524,11 @@ CREATE TABLE measurements_YYYYMMDD (
     temperature REAL NOT NULL,
     humidity REAL NOT NULL,
     dewpoint REAL,
-    absolute_humidity REAL
+    absolute_humidity REAL,
+    device_id INTEGER NOT NULL DEFAULT 1  -- sensor id (see Settings)
 );
 CREATE INDEX idx_measurements_YYYYMMDD_timestamp ON measurements_YYYYMMDD(timestamp);
+CREATE INDEX idx_measurements_YYYYMMDD_device ON measurements_YYYYMMDD(device_id, timestamp);
 ```
 
 ### Testing
@@ -478,15 +539,13 @@ The application includes an automated test suite:
 python test_app.py
 ```
 
-**Test Coverage:**
-- Calculations: Dew point, absolute humidity, Humidex formulas
-- Database: CRUD operations, queries, partitioned tables, integer timestamps
-- Translations: NL/EN key parity and completeness
-- Psychrometric chart: Chart generation, multi-language support
-- Data validation: Temperature and humidity ranges
-- Production database: Database existence and structure verification
-
-All 15 tests must pass before committing new features.
+**Test coverage** (45 tests, also run by the *CI Testing* workflow on every pull request):
+- Settings: migration from `.env`, validation, all-or-nothing saving, write-only secrets
+- Login: password rules, sessions, throttling, protection levels, redirects
+- Buses and sensors: validation, upgrade of existing data, signed register values, failure isolation
+- Notifications: limits, alarm delay, hysteresis, recovery and offline alerts, retries
+- MQTT: topics, payloads, reconnect behaviour
+- Translations: same placeholders in every language, no untranslated text in the layout
 
 ### Development
 
@@ -495,28 +554,21 @@ All 15 tests must pass before committing new features.
 pip freeze > requirements.txt
 ```
 
-#### Code Structure (Modular Architecture)
+#### Code Structure
 
-The codebase has been modularized for better maintainability:
-
-- **app.py** (45 lines): Clean entry point with app initialization
-- **database.py** (190 lines): Table-per-day partitioning, WAL mode, UNION queries, cleanup
-- **modbus_reader.py** (185 lines): Modbus RTU communication, batch buffering, validation
-- **psychrometric.py** (317 lines): Mollier diagram generation (current + historical)
-- **callbacks.py** (636 lines): 7 Dash callbacks for UI interaction
-- **layout.py**: UI components, modal system, styling
-- **translations.py**: Translation system (NL/EN)
-- **test_app.py** (320 lines): Automated test suite (15 tests)
-
-**Dependency Flow:**
-```
-app.py
-├── database.py (standalone)
-├── modbus_reader.py → database.py
-├── psychrometric.py → translations.py
-├── callbacks.py → database.py, psychrometric.py, translations.py
-└── layout.py → translations.py
-```
+- **app.py**: entry point, starts the Modbus reader, notifications, MQTT and the web server
+- **layout.py**: page structure, theme tokens (dark/light) and styling
+- **callbacks.py**: dashboard (board/meters, chart, status, Mollier diagram, historical replay)
+- **settings_ui.py**: Settings tab
+- **settings.py** / **devices.py**: settings, buses and sensors stored in the database
+- **modbus_reader.py**: one thread per RS-485 bus, batched database writes
+- **alerts.py**: limits, alarm state, Telegram and e-mail notifications
+- **mqtt_publisher.py**: MQTT publishing
+- **auth.py**: admin password, login sessions, protection
+- **database.py**: table-per-day storage, queries, cleanup
+- **psychrometric.py**: Mollier diagram
+- **translations.py**: texts in NL, EN, DE, FR, ES
+- **test_app.py**: automated tests
 
 ### Troubleshooting
 
