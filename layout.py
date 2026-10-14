@@ -198,6 +198,10 @@ HTML_TEMPLATE = '''
             .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner td.focused { background: var(--hover) !important; }
             .dash-table-container .dash-delete-cell, .dash-table-container .dash-select-cell { background: var(--panel) !important; color: var(--muted) !important; }
 
+            .site-footer { text-align: center; padding: 8px 16px 28px; font-size: 12px; color: var(--muted); }
+            .site-footer a { color: var(--muted); text-underline-offset: 3px; }
+            .site-footer a:hover { color: var(--text); }
+
             @media (max-width: 720px) {
                 .topbar { padding: 10px 14px; gap: 10px; }
                 .topbar-left, .topbar-right { gap: 14px; }
@@ -347,5 +351,9 @@ def create_layout():
 
         html.Main(id='page-settings', className='page', style={'display': 'none'}, children=[
             html.Div(id='settings-content', className='panel settings'),
+        ]),
+
+        html.Footer(className='site-footer', children=[
+            'Made by ', html.A('BRDC', href='https://brdc.nl', target='_blank', rel='noopener'),
         ]),
     ])
