@@ -209,6 +209,33 @@ def test_reset_password_revokes_sessions():
     assert client.get('/').status_code == 302
 
 
+def test_global_cap_does_not_lock_out_admin():
+    fresh_settings()
+    auth.set_password('geheim123', 'geheim123')
+    client = make_client()
+    now = time.time()
+    for i in range(auth.MAX_FAILURES_GLOBAL):              # aanval vanaf veel adressen
+        auth._failures[f'10.0.{i // 250}.{i % 250}'] = [now]
+    assert auth._blocked_for('10.0.0.1') > 0               # aanvaller: nog maar 1 poging
+    assert auth._blocked_for('192.0.2.50') == 0            # beheerder zonder mislukte pogingen
+    r = client.post('/login', data={'password': 'geheim123'})
+    assert r.status_code == 302
+
+
+def test_login_racing_password_change_is_not_upgraded():
+    fresh_settings()
+    auth.set_password('geheim123', 'geheim123')
+    settings.save({'auth_mode': 'app'})
+    client = make_client()
+    old_hash = settings.get('admin_password_hash')
+    auth.set_password('nieuw12345', 'nieuw12345')          # wijziging tussen controle en sessiestart
+    with client.application.test_request_context():
+        auth._start_session(old_hash)
+        from flask import session
+        assert not auth.is_logged_in()
+        assert session.get('sid') not in auth._sessions
+
+
 def test_no_open_redirect():
     for target in ['//evil.example', '/\\evil.example', '/\t/evil.example', 'https://evil.example', 'javascript:alert(1)',
                    '/\n/evil.example', ' /x']:
