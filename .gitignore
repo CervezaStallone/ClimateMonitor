@@ -81,8 +81,9 @@ check_*.py
 .env.*
 !.env.example
 
-# Claude Code local settings (project skills in .claude/skills are shared)
-.claude/settings.local.json
-
-# Spec Kit machine-local state
-.specify/feature.json
+# AI tooling and specs: never in this repository
+.claude/
+.specify/
+specs/
+CLAUDE.md
+AGENTS.md
