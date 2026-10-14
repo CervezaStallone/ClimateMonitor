@@ -250,11 +250,11 @@ def register_settings_callbacks(app):
     )
     def save_settings(n_clicks, values, lang, bus_rows, device_rows):
         t = _t(lang)
-        keys = [item['id']['key'] for item in callback_context.states_list[0]]
         ok_style = {'marginTop': '10px', 'fontWeight': 'bold', 'color': '#27ae60'}
         bad_style = {'marginTop': '10px', 'fontWeight': 'bold', 'color': '#c0392b'}
         if not auth.is_logged_in():
-            return [''] * len(keys), t['settings_locked'], bad_style
+            return no_update, t['settings_locked'], bad_style
+        keys = [item['id']['key'] for item in callback_context.states_list[0]]
 
         # Eerst de Modbus configuratie valideren, zodat bij een fout niets wordt opgeslagen
         _, _, modbus_errors = devices.validate_config(bus_rows or [], device_rows or [])
@@ -311,6 +311,8 @@ def register_settings_callbacks(app):
         prevent_initial_call=True
     )
     def add_bus(n_clicks, rows):
+        if not auth.is_logged_in():
+            return no_update
         rows = rows or []
         used = {r.get('port') for r in rows}
         port = next((p for p in devices.available_ports() if p not in used), '')
@@ -325,6 +327,8 @@ def register_settings_callbacks(app):
         prevent_initial_call=True
     )
     def add_device(n_clicks, rows, bus_rows):
+        if not auth.is_logged_in():
+            return no_update
         rows = rows or []
         bus_name = (bus_rows or [{}])[0].get('name', '')
         used = {r.get('slave_id') for r in rows if r.get('bus') == bus_name}
@@ -341,6 +345,8 @@ def register_settings_callbacks(app):
     )
     def update_bus_choices(bus_rows, dropdown):
         """Bus keuze in de device tabel volgt de (nog niet opgeslagen) bustabel."""
+        if not auth.is_logged_in():
+            return no_update
         names = [r['name'] for r in bus_rows or [] if r.get('name')]
         return {**dropdown, 'bus': {'options': [{'label': n, 'value': n} for n in names], 'clearable': False}}
 

@@ -29,6 +29,9 @@ import database  # noqa: E402
 import devices  # noqa: E402
 import modbus_reader  # noqa: E402
 import settings  # noqa: E402
+from translations import TRANSLATIONS  # noqa: E402
+
+TRANSLATIONS_NL = TRANSLATIONS['nl']
 
 
 def fresh_settings():
@@ -423,6 +426,36 @@ def test_writer_stores_device_and_splits_days():
     assert conn.execute('SELECT device_id FROM measurements_20261013').fetchall() == [(3,)]
     assert conn.execute('SELECT device_id FROM measurements_20261014').fetchall() == [(4,)]
     conn.close()
+
+
+def test_settings_callbacks_require_login():
+    """Settings callbacks geven zonder login geen configuratie, poorten of status terug."""
+    import dash
+    import settings_ui
+    fresh_settings()
+    devices.init_devices()
+    auth.set_password('geheim123', 'geheim123')
+    app = dash.Dash(__name__, suppress_callback_exceptions=True)
+    auth.init_app(app.server)
+    settings_ui.register_settings_callbacks(app)
+    callbacks = {}
+    for entry in app.callback_map.values():
+        fn = getattr(entry['callback'], '__wrapped__', None)
+        if fn:
+            callbacks[fn.__name__] = fn
+    rows = [bus()]
+    with app.server.test_request_context():
+        assert callbacks['add_bus'](1, rows) is dash.no_update
+        assert callbacks['add_device'](1, [], rows) is dash.no_update
+        assert callbacks['update_bus_choices'](rows, {}) is dash.no_update
+        assert callbacks['refresh_device_status'](3, 'settings', 'nl') is dash.no_update
+        assert all(v is dash.no_update for v in callbacks['show_modbus_errors'](1, rows, [], 'nl'))
+        errors, status, _ = callbacks['save_settings'](1, [], 'nl', rows, [])
+        assert errors is dash.no_update and status == TRANSLATIONS_NL['settings_locked']
+        assert callbacks['change_password'](1, 'x', 'y', 'y', 'nl')[0] == TRANSLATIONS_NL['settings_locked']
+        assert 'admin' not in str(callbacks['show_settings']('settings', 'nl'))   # alleen het inlogscherm
+    assert set(callbacks) >= {'add_bus', 'add_device', 'update_bus_choices', 'refresh_device_status',
+                              'show_modbus_errors', 'save_settings', 'change_password', 'show_settings'}
 
 
 if __name__ == '__main__':
