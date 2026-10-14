@@ -474,7 +474,7 @@ def test_settings_callbacks_require_login():
 
 # --- meldingen -----------------------------------------------------------------
 
-TOKEN = '123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw1'
+TOKEN = '123456:FAKE-test-token-not-a-real-bot-xxxxx'   # nep, alleen formaat
 
 
 def outbox_texts():
