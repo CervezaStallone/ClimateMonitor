@@ -1,5 +1,5 @@
-# XY-MD02 WebApp
-A professional real-time climate monitoring dashboard application for the XY-MD02 sensor that reads, visualizes, and analyzes Modbus RTU data.
+# Climate Monitor
+A real-time climate monitoring dashboard for Modbus RTU temperature and humidity sensors (XY-MD02, XY-MD04 and similar) that reads, visualizes and analyzes their data.
 
 ### Features
 
@@ -74,8 +74,8 @@ A professional real-time climate monitoring dashboard application for the XY-MD0
 
 1. **Clone the repository**
 ```bash
-git clone <repository-url>
-cd XY-MD02_WebApp
+git clone https://github.com/CervezaStallone/ClimateMonitor.git
+cd ClimateMonitor
 ```
 
 2. **Create a virtual environment**
@@ -172,7 +172,7 @@ be writable by others.
 
 1. Install Python 3.10+ from [python.org](https://www.python.org/downloads/): choose *Customize installation*,
    tick *Install Python for all users* and *Add Python to environment variables*.
-   Copy the app to a folder that only administrators can change, e.g. `C:\Program Files\XY-MD02_WebApp`.
+   Copy the app to a folder that only administrators can change, e.g. `C:\Program Files\ClimateMonitor`.
 2. Open PowerShell **as Administrator** in the app folder and run:
    ```powershell
    powershell -ExecutionPolicy Bypass -File .\deploy\windows\install-service.ps1
@@ -184,7 +184,7 @@ limited built-in *LOCAL SERVICE* account (no login needed), restarts the app if 
 the web port in the firewall for domain and private networks (add `-AllowPublic` to also allow
 networks marked as public). Output is written to `logs\app.log`.
 
-Put the app in a folder that only administrators can change (e.g. `C:\Program Files\XY-MD02_WebApp`);
+Put the app in a folder that only administrators can change (e.g. `C:\Program Files\ClimateMonitor`);
 the script refuses to install from a folder that normal users can modify.
 
 | Task | How |
@@ -199,7 +199,7 @@ the script refuses to install from a folder that normal users can modify.
 ### Project Structure
 
 ```
-XY-MD02_WebApp/
+ClimateMonitor/
 ├── app.py                      # Main entry point
 ├── database.py                 # Database operations, partitioning, WAL mode
 ├── modbus_reader.py            # Modbus RTU: one thread per bus, batched database writes

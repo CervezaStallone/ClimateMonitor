@@ -13,7 +13,7 @@ We release patches for security vulnerabilities for the following versions:
 
 ## Reporting a Vulnerability
 
-We take the security of XY-MD02 WebApp seriously. If you believe you have found a security vulnerability, please report it to us as described below.
+We take the security of Climate Monitor seriously. If you believe you have found a security vulnerability, please report it to us as described below.
 
 ### Please Do NOT:
 
@@ -118,7 +118,7 @@ Security updates will be released as:
 - **Minor versions** (e.g., 1.5.x → 1.6.0) for moderate security improvements
 - **Immediate hotfixes** for critical vulnerabilities
 
-Check the [Releases](https://github.com/CervezaStallone/XY-MD02_WebApp/releases) page for security-related updates.
+Check the [Releases](https://github.com/CervezaStallone/ClimateMonitor/releases) page for security-related updates.
 
 ## Acknowledgments
 
@@ -130,4 +130,4 @@ We appreciate security researchers and users who report vulnerabilities responsi
 
 ---
 
-**Thank you for helping keep XY-MD02 WebApp and its users safe!** 🔒
+**Thank you for helping keep Climate Monitor and its users safe!** 🔒

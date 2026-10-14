@@ -18,7 +18,7 @@ from settings_ui import register_settings_callbacks
 logging.getLogger('waitress').setLevel(logging.ERROR)
 
 # Initialiseer database
-print("=== XY-MD02 WebApp Startup ===")
+print("=== Climate Monitor Startup ===")
 settings.load()
 init_database()
 devices.init_devices()
@@ -34,7 +34,7 @@ modbus_thread = start_modbus_thread()
 
 # Dash app initialisatie
 print("→ Initialiseren Dash applicatie...")
-app = Dash(__name__, title="XY-MD02 Temperature & Humidity Monitor", suppress_callback_exceptions=True)
+app = Dash(__name__, title="Climate Monitor", suppress_callback_exceptions=True)
 server = app.server
 auth.init_app(server)
 app.index_string = HTML_TEMPLATE
