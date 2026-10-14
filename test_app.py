@@ -29,6 +29,7 @@ import auth  # noqa: E402
 import database  # noqa: E402
 import devices  # noqa: E402
 import modbus_reader  # noqa: E402
+import mqtt_publisher  # noqa: E402
 import settings  # noqa: E402
 from translations import TRANSLATIONS  # noqa: E402
 
@@ -464,9 +465,11 @@ def test_settings_callbacks_require_login():
         assert callbacks['add_rule'](1, []) is dash.no_update
         assert callbacks['send_test'](1, 0, [], 'nl') == TRANSLATIONS_NL['settings_locked']
         assert callbacks['refresh_alert_log'](5, 'settings', 'nl') is dash.no_update
+        assert callbacks['test_mqtt'](1, [], 'nl') == TRANSLATIONS_NL['settings_locked']
+        assert callbacks['refresh_mqtt_status'](3, 'settings', 'nl') is dash.no_update
     assert set(callbacks) >= {'add_bus', 'add_device', 'update_bus_choices', 'refresh_device_status',
                               'show_modbus_errors', 'save_settings', 'change_password', 'show_settings',
-                              'add_rule', 'send_test', 'refresh_alert_log'}
+                              'add_rule', 'send_test', 'refresh_alert_log', 'test_mqtt', 'refresh_mqtt_status'}
 
 
 # --- meldingen -----------------------------------------------------------------
@@ -637,6 +640,86 @@ def test_notifier_retries_failed_messages():
         assert alerts.log[0]['ok'] is True and alerts.log[0]['attempt'] == 2
     finally:
         alerts.CHANNELS['telegram'] = original
+
+
+# --- MQTT ----------------------------------------------------------------------
+
+def test_mqtt_settings_validation():
+    fresh_settings()
+    assert settings.save({'mqtt_enabled': True}) == {'mqtt_host': 'err_required'}
+    assert settings.save({'mqtt_topic_prefix': 'fabriek/#'}) == {'mqtt_topic_prefix': 'err_topic'}
+    assert settings.save({'mqtt_topic_prefix': '/fabriek'}) == {'mqtt_topic_prefix': 'err_topic'}
+    assert settings.save({'mqtt_client_id': 'met spatie'}) == {'mqtt_client_id': 'err_client_id'}
+    assert settings.save({'mqtt_enabled': True, 'mqtt_host': 'broker.local', 'mqtt_topic_prefix': 'fabriek/hal1',
+                          'mqtt_username': 'edge', 'mqtt_password': 'Mq!pw'}) == {}
+    assert settings.save({'mqtt_tls': [], 'mqtt_host': 'evil.example', 'mqtt_password': ''}) == {'mqtt_password': 'err_secret_reenter'}
+    assert settings.merged({'mqtt_host': 'evil.example', 'mqtt_password': ''})['mqtt_password'] == ''
+
+
+def test_mqtt_slugs_are_unique_topic_levels():
+    assert mqtt_publisher.slug('Kas noord') == 'kas-noord'
+    assert mqtt_publisher.slug('Koelcel #2 (Hal Ü)') == 'koelcel-2-hal-u'
+    assert mqtt_publisher.slug('###') == 'sensor'
+    names = mqtt_publisher.topic_names({1: {'name': 'Kas 1'}, 5: {'name': 'Kas-1'}, 3: {'name': 'Hal'}})
+    assert names == {1: 'kas-1', 3: 'hal', 5: 'kas-1-5'}
+
+
+class FakeMqttClient:
+    def __init__(self):
+        self.messages = []
+
+    def publish(self, topic, payload, qos=0, retain=False):
+        self.messages.append((topic, payload, qos, retain))
+
+
+def test_mqtt_publishes_only_new_measurements():
+    import json
+    fresh_settings()
+    mqtt_publisher._latest.clear()
+    publisher = mqtt_publisher.Publisher()
+    publisher.client = FakeMqttClient()
+    config = {'mqtt_topic_prefix': 'fabriek/hal1', 'mqtt_qos': 1, 'mqtt_retain': True}
+    devices.save_config([bus()], [device('Kas noord')])
+    kas_id = devices.load_config()[1][0]['id']
+    mqtt_publisher.store({'id': kas_id, 'name': 'Kas noord'}, {'temperature': 18.666, 'humidity': 62.0, 'dewpoint': 11.1,
+                                                               'absolute_humidity': 9.9}, ts=1791972000)
+    publisher.publish(config)
+    topics = {m[0]: m for m in publisher.client.messages}
+    state = json.loads(topics['fabriek/hal1/kas-noord/state'][1])
+    assert state['device_id'] == kas_id and state['name'] == 'Kas noord' and state['temperature'] == 18.67
+    assert state['timestamp'].startswith('2026-10-')
+    assert topics['fabriek/hal1/kas-noord/humidity'][1:] == ('62.0', 1, True)
+    assert len(publisher.client.messages) == 5
+    publisher.client.messages.clear()
+    publisher.publish(config)                                # geen nieuwe meting: niets opnieuw
+    assert publisher.client.messages == []
+
+
+def test_mqtt_forgets_deleted_sensors():
+    fresh_settings()
+    mqtt_publisher._latest.clear()
+    devices.save_config([bus()], [device('Kas noord')])
+    old_id = devices.load_config()[1][0]['id']
+    mqtt_publisher.store({'id': old_id, 'name': 'Kas noord'}, {'temperature': 18.0})
+    devices.save_config([bus()], [device('Kas noord')])      # verwijderd en opnieuw toegevoegd: nieuw id
+    new_id = devices.load_config()[1][0]['id']
+    mqtt_publisher.store({'id': new_id, 'name': 'Kas noord'}, {'temperature': 19.0})
+    publisher = mqtt_publisher.Publisher()
+    publisher.client = FakeMqttClient()
+    publisher.publish({'mqtt_topic_prefix': 'p', 'mqtt_qos': 0, 'mqtt_retain': False})
+    assert ('p/kas-noord/temperature', '19.0', 0, False) in publisher.client.messages
+    assert old_id not in mqtt_publisher._latest
+
+
+def test_mqtt_test_connection_reports_errors():
+    import socket
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0))
+        port = sock.getsockname()[1]                         # poort die zeker dicht is
+    config = {k: settings.SCHEMA[k]['default'] for k in mqtt_publisher.CONFIG_KEYS}
+    config.update(mqtt_host='127.0.0.1', mqtt_port=port)
+    error = mqtt_publisher.test_connection(config)
+    assert error and 'refused' in error.lower()
 
 
 if __name__ == '__main__':

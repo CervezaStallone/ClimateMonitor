@@ -19,6 +19,7 @@ import serial
 
 import alerts
 import devices
+import mqtt_publisher
 import settings
 from database import DB_FILE, cleanup_old_data, ensure_table_exists, get_table_name
 
@@ -179,8 +180,10 @@ class BusPoller(threading.Thread):
         dewpoint, absolute_humidity = derived_values(temperature, humidity)
         self.measurements.put((int(time.time()), temperature, humidity, dewpoint, absolute_humidity, device['id']))
         devices.report_ok(device['id'], temperature, humidity)
-        alerts.evaluate(device, {'temperature': temperature, 'humidity': humidity, 'dewpoint': dewpoint,
-                                 'absolute_humidity': absolute_humidity})
+        values = {'temperature': temperature, 'humidity': humidity, 'dewpoint': dewpoint,
+                  'absolute_humidity': absolute_humidity}
+        alerts.evaluate(device, values)
+        mqtt_publisher.store(device, values)
         self.last_errors.pop(device['id'], None)
         if settings.get('debug_logging'):
             print(f"{datetime.now().strftime('%H:%M:%S')} - {device['name']}: {temperature:.1f}°C, {humidity:.1f}%")

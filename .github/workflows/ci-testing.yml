@@ -46,6 +46,7 @@ jobs:
         python -m py_compile settings.py
         python -m py_compile devices.py
         python -m py_compile alerts.py
+        python -m py_compile mqtt_publisher.py
         python -m py_compile settings_ui.py
         python -m py_compile auth.py
         python -m py_compile test_app.py
@@ -63,7 +64,7 @@ jobs:
         CI: true
         MODBUS_PORT: /dev/null
       run: |
-        python -c "import database; import psychrometric; import callbacks; import layout; import translations; import settings; import auth; import settings_ui; import devices; import modbus_reader; import alerts"
+        python -c "import database; import psychrometric; import callbacks; import layout; import translations; import settings; import auth; import settings_ui; import devices; import modbus_reader; import alerts; import mqtt_publisher"
         echo "✓ All modules import successfully (skipping app.py in CI)"
     
     - name: Validate .env.example
