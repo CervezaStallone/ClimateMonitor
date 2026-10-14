@@ -3,6 +3,7 @@ from waitress import serve
 import logging
 
 # Import modules
+import alerts
 import auth
 import devices
 import settings
@@ -25,7 +26,8 @@ devices.init_devices()
 if settings.get('data_retention_days') > 0:
     cleanup_old_data()
 
-# Start Modbus thread
+# Start meldingen en Modbus threads
+alerts.start()
 modbus_thread = start_modbus_thread()
 
 # Dash app initialisatie

@@ -24,6 +24,7 @@ A professional real-time climate monitoring dashboard application for the XY-MD0
 - **Robust**: Extensive input validation and error handling
 - **Multiple sensors and RS-485 buses**: several USB/RS-485 interfaces, each with several Modbus slaves; combined and per-sensor graphs
 - **Configurable in the browser**: Settings tab for buses, sensors, timezone, language, data retention, server and security
+- **Notifications**: Telegram and/or e-mail when limits are exceeded (global or per sensor), when values are back to normal and when a sensor goes offline
 - **Login protection**: Admin password for the Settings tab, optionally for the whole app
 
 ### Screenshots
@@ -127,6 +128,7 @@ XY-MD02_WebApp/
 ├── database.py                 # Database operations, partitioning, WAL mode
 ├── modbus_reader.py            # Modbus RTU: one thread per bus, batched database writes
 ├── devices.py                  # Buses and sensors configuration, live status
+├── alerts.py                   # Limits, alarm state, Telegram/e-mail notifications
 ├── psychrometric.py            # Mollier diagram generation
 ├── callbacks.py                # Dash callbacks (7 functions)
 ├── settings.py                 # Settings stored in the database, validation, password reset
@@ -154,6 +156,8 @@ Open the **Settings** tab in the web app. The first visit asks you to create an 
 | Section | Settings |
 |---------|----------|
 | Modbus buses and sensors | Poll interval, buses (RS-485 interfaces), sensors (Modbus slaves) |
+| Notifications: channels | Telegram bot token and chat ID, SMTP server, sender and recipients, test buttons |
+| Notifications: limits | Limits per quantity (all sensors or one sensor), alarm delay, hysteresis, recovery and offline alerts |
 | Region and language | Timezone, default language |
 | Data | Data retention (days, 0 = forever), debug logging |
 | Server | Listen address and port (*restart required*) |
@@ -195,6 +199,27 @@ applied without restarting the app. Deleting a sensor keeps its measurements in 
 On the dashboard choose **All sensors (combined)** for one graph per quantity with a line per
 sensor, a status card per sensor and all sensors in the Mollier diagram, or select one sensor for
 its detailed view and historical replay.
+
+#### Notifications
+
+1. **Channels** (Settings → Notifications: channels)
+   - *Telegram*: create a bot with [@BotFather](https://t.me/BotFather) and copy the token.
+     Send your bot a message and fill in your chat ID (e.g. from [@userinfobot](https://t.me/userinfobot)),
+     or a group/channel ID.
+   - *E-mail*: SMTP server, port, security (STARTTLS 587 / SSL 465), username/password, sender and
+     one or more recipients (comma separated).
+   - Use **Test Telegram** / **Test e-mail** to check the settings before saving.
+   - Token and password are never shown again; leave the field empty to keep the stored value.
+2. **Limits** (Settings → Notifications: limits)
+   - Add a limit per quantity (temperature, humidity, dew point, absolute humidity) with a
+     minimum and/or maximum, for *All sensors* or for one sensor. A rule for one sensor replaces
+     the rule for all sensors for that quantity.
+   - *Alarm delay*: how long a limit must be exceeded before an alert is sent (no alerts for spikes).
+   - *Hysteresis*: how far back inside the limit a value must be before it counts as normal again,
+     so a value hovering around the limit does not cause a stream of messages.
+   - *Notify when back to normal* and *Offline alert after N minutes* (0 = off).
+   - The last 20 notifications and their delivery status are listed below the limits. Failed
+     messages are retried automatically (up to every hour).
 
 #### Modbus values in `.env` (first start only)
 

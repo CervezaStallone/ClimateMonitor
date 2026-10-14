@@ -40,11 +40,38 @@ SCHEMA = {
     'app_port': {'type': int, 'default': 8050, 'section': 'server', 'min': 1, 'max': 65535, 'restart': True},
     'auth_mode': {'type': str, 'default': 'settings', 'section': 'security', 'choices': ['settings', 'app']},
     'session_timeout_minutes': {'type': int, 'default': 60, 'section': 'security', 'min': 5, 'max': 1440},
+    # Notificaties (secret = nooit naar de browser, leeg laten = huidige waarde houden)
+    'telegram_enabled': {'type': bool, 'default': False, 'section': 'notify'},
+    'telegram_bot_token': {'type': str, 'default': '', 'section': 'notify', 'secret': True, 'optional': True,
+                           'check': 'telegram_token'},
+    'telegram_chat_id': {'type': str, 'default': '', 'section': 'notify', 'optional': True, 'check': 'chat_id'},
+    'smtp_enabled': {'type': bool, 'default': False, 'section': 'notify'},
+    'smtp_host': {'type': str, 'default': '', 'section': 'notify', 'optional': True, 'check': 'host'},
+    'smtp_port': {'type': int, 'default': 587, 'section': 'notify', 'min': 1, 'max': 65535},
+    'smtp_security': {'type': str, 'default': 'starttls', 'section': 'notify', 'choices': ['starttls', 'ssl', 'none']},
+    'smtp_username': {'type': str, 'default': '', 'section': 'notify', 'optional': True},
+    'smtp_password': {'type': str, 'default': '', 'section': 'notify', 'secret': True, 'optional': True},
+    'smtp_from': {'type': str, 'default': '', 'section': 'notify', 'optional': True, 'check': 'email_list'},
+    'smtp_to': {'type': str, 'default': '', 'section': 'notify', 'optional': True, 'check': 'email_list'},
+    'alert_delay_seconds': {'type': int, 'default': 60, 'section': 'alerts', 'min': 0, 'max': 3600},
+    'alert_hysteresis_temp': {'type': float, 'default': 0.5, 'section': 'alerts', 'min': 0, 'max': 20},
+    'alert_hysteresis_humidity': {'type': float, 'default': 2.0, 'section': 'alerts', 'min': 0, 'max': 50},
+    'alert_notify_recovery': {'type': bool, 'default': True, 'section': 'alerts'},
+    'alert_offline_minutes': {'type': int, 'default': 10, 'section': 'alerts', 'min': 0, 'max': 1440},
+}
+
+# Als een kanaal aan staat moeten deze velden ingevuld zijn
+REQUIRED_WHEN = {
+    'telegram_enabled': ['telegram_bot_token', 'telegram_chat_id'],
+    'smtp_enabled': ['smtp_host', 'smtp_from', 'smtp_to'],
 }
 
 # Interne waarden: nooit naar de browser
 INTERNAL_KEYS = ('admin_password_hash', 'secret_key')
 
+_EMAIL_RE = re.compile(r'^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$')
+_TELEGRAM_TOKEN_RE = re.compile(r'^\d{5,}:[A-Za-z0-9_-]{30,}$')
+_CHAT_ID_RE = re.compile(r'^(-?\d{1,20}|@[A-Za-z][A-Za-z0-9_]{4,})$')
 _HOSTNAME_RE = re.compile(r'^[A-Za-z0-9]([A-Za-z0-9-]{0,62}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,62}[A-Za-z0-9])?)*$')
 
 _cache = {}
@@ -74,7 +101,11 @@ def coerce(key, raw):
             return False
         raise ValueError(raw)
     if raw is None or str(raw).strip() == '':
+        if SCHEMA[key].get('optional'):
+            return ''
         raise ValueError(raw)
+    if kind is float:
+        return float(str(raw).replace(',', '.'))
     if kind is int:
         value = float(raw)
         if value != int(value):
@@ -87,6 +118,8 @@ def coerce(key, raw):
 def validate(key, value):
     """Geef een foutcode terug (vertaalbaar via translations.py) of None als de waarde geldig is."""
     spec = SCHEMA[key]
+    if value == '' and spec.get('optional'):
+        return None
     if 'choices' in spec and value not in spec['choices']:
         return 'err_choice'
     if 'min' in spec and not (spec['min'] <= value <= spec['max']):
@@ -96,6 +129,13 @@ def validate(key, value):
             ZoneInfo(value)
         except Exception:
             return 'err_timezone'
+    if spec.get('check') == 'email_list':
+        if not all(_EMAIL_RE.match(a.strip()) for a in value.split(',')):
+            return 'err_email'
+    if spec.get('check') == 'telegram_token' and not _TELEGRAM_TOKEN_RE.match(value):
+        return 'err_telegram_token'
+    if spec.get('check') == 'chat_id' and not _CHAT_ID_RE.match(value):
+        return 'err_chat_id'
     if spec.get('check') == 'host':
         try:
             ipaddress.ip_address(value)
@@ -150,8 +190,20 @@ def get(key):
 
 
 def public_values():
-    """Alle bewerkbare instellingen, zonder interne/geheime waarden."""
-    return {k: get(k) for k in SCHEMA}
+    """Alle bewerkbare instellingen, zonder interne/geheime waarden (secrets alleen of ze ingesteld zijn)."""
+    return {k: bool(get(k)) if SCHEMA[k].get('secret') else get(k) for k in SCHEMA}
+
+
+def merged(values):
+    """Opgeslagen instellingen met (ongevalideerde) formulierwaarden erover; lege secrets = opgeslagen waarde."""
+    result = {k: get(k) for k in SCHEMA}
+    for key, raw in values.items():
+        if key in SCHEMA and not (SCHEMA[key].get('secret') and (raw is None or str(raw) == '')):
+            try:
+                result[key] = coerce(key, raw)
+            except (ValueError, TypeError):
+                pass
+    return result
 
 
 def save(values):
@@ -164,6 +216,8 @@ def save(values):
         if key not in SCHEMA:
             errors[key] = 'err_unknown'
             continue
+        if SCHEMA[key].get('secret') and (raw is None or str(raw) == ''):
+            continue  # write-only veld leeg gelaten: huidige waarde houden
         try:
             value = coerce(key, raw)
         except (ValueError, TypeError):
@@ -174,6 +228,14 @@ def save(values):
             errors[key] = error
         else:
             clean[key] = value
+    if not errors:
+        result = {k: get(k) for k in SCHEMA}
+        result.update(clean)
+        for switch, fields in REQUIRED_WHEN.items():
+            if result[switch]:
+                for field in fields:
+                    if result[field] == '':
+                        errors[field] = 'err_required'
     if errors:
         return errors
     _write(clean)
