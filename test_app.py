@@ -226,6 +226,34 @@ def test_global_cap_blocks_new_clients_but_not_trusted_browser():
     assert forged.post('/login', data={'password': 'geheim123'}).status_code == 429
 
 
+def test_stolen_trusted_cookie_is_limited_across_addresses():
+    fresh_settings()
+    auth.set_password('geheim123', 'geheim123')
+    admin = make_client()
+    admin.post('/login', data={'password': 'geheim123'})
+    stolen = admin.get_cookie(auth.TRUSTED_COOKIE).value
+    now = time.time()
+    for i in range(auth.MAX_FAILURES_GLOBAL):
+        auth._failures[f'10.0.{i // 250}.{i % 250}'] = [now]
+    codes = []
+    for i in range(auth.MAX_FAILURES + 2):                  # elke poging vanaf een ander adres
+        attacker = admin.application.test_client()
+        attacker.set_cookie(auth.TRUSTED_COOKIE, stolen)
+        codes.append(attacker.post('/login', data={'password': 'fout'},
+                                   environ_base={'REMOTE_ADDR': f'198.51.100.{i}'}).status_code)
+    assert codes[:auth.MAX_FAILURES] == [401] * auth.MAX_FAILURES and set(codes[auth.MAX_FAILURES:]) == {429}
+
+
+def test_trusted_cookie_invalid_after_password_change():
+    fresh_settings()
+    auth.set_password('geheim123', 'geheim123')
+    admin = make_client()
+    admin.post('/login', data={'password': 'geheim123'})
+    auth.set_password('nieuw12345', 'nieuw12345')
+    with admin.application.test_request_context(headers={'Cookie': f"{auth.TRUSTED_COOKIE}={admin.get_cookie(auth.TRUSTED_COOKIE).value}"}):
+        assert auth._trusted_browser_id() is None
+
+
 def test_login_racing_password_change_is_not_upgraded():
     fresh_settings()
     auth.set_password('geheim123', 'geheim123')
