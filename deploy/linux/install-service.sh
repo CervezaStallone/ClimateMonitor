@@ -44,6 +44,19 @@ PYTHON="$(command -v python3 || true)"
 echo "→ App folder:   $APP_DIR"
 echo "→ Service user: $RUN_USER"
 
+# The service runs code from the app folder as RUN_USER. Nobody else may be able to change that
+# code, otherwise they could run commands as RUN_USER (e.g. via --user for another account).
+for path in "$APP_DIR" "$APP_DIR/app.py" "$APP_DIR/.venv"; do
+    [ -e "$path" ] || continue
+    owner="$(stat -c %U "$path")"
+    if [ "$owner" != "$RUN_USER" ] && [ "$owner" != "root" ]; then
+        fail "$path is owned by '$owner'. It must be owned by '$RUN_USER' or root (sudo chown -R $RUN_USER '$APP_DIR')"
+    fi
+    if [ -n "$(find "$path" -maxdepth 0 -perm -o+w)" ]; then
+        fail "$path is writable by all users. Fix it with: chmod o-w '$path'"
+    fi
+done
+
 # Virtual environment and dependencies (as the service user, so it owns the files)
 if [ ! -x "$APP_DIR/.venv/bin/python" ]; then
     run sudo -u "$RUN_USER" "$PYTHON" -m venv "$APP_DIR/.venv"

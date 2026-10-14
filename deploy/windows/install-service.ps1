@@ -4,18 +4,22 @@
 
 .DESCRIPTION
     - Creates a Python virtual environment and installs the dependencies
-    - Registers the scheduled task "XY-MD02 WebApp": runs at startup as SYSTEM (no login needed)
-      and restarts the app when it stops (run-app.cmd)
-    - Opens the web port in the Windows firewall
+    - Registers the scheduled task "XY-MD02 WebApp": runs at startup as LOCAL SERVICE (a limited
+      built-in account, no login needed) and restarts the app when it stops (run-app.cmd)
+    - Opens the web port in the Windows firewall for domain and private networks
     Run in PowerShell as Administrator, in the app folder:
         powershell -ExecutionPolicy Bypass -File .\deploy\windows\install-service.ps1
     Run again to update after changing the app or the port.
 
 .PARAMETER Port
     Web port to open in the firewall (default 8050, change it if you changed the port in Settings).
+
+.PARAMETER AllowPublic
+    Also open the port on networks marked as "Public" (not recommended).
 #>
 param(
-    [int]$Port = 8050
+    [int]$Port = 8050,
+    [switch]$AllowPublic
 )
 
 $ErrorActionPreference = 'Stop'
@@ -32,6 +36,35 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 }
 
 Write-Host "-> App folder: $AppDir"
+
+# The task runs code from the app folder. Only administrators may be able to change it,
+# otherwise a normal user could run commands as the service account.
+$TrustedSids = @(
+    'S-1-5-18',       # SYSTEM
+    'S-1-5-32-544',   # Administrators
+    'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'   # TrustedInstaller
+)
+# Only real write rights (Modify/FullControl also contain read bits, so do not test against those)
+$WriteBits = [int64](2 -bor 4 -bor 16 -bor 64 -bor 256 -bor 65536 -bor 262144 -bor 524288)   # write/append/delete/ACL/owner
+$GenericWriteBits = [int64](0x40000000 -bor 0x10000000)                                         # GENERIC_WRITE, GENERIC_ALL
+foreach ($Path in @($AppDir, (Join-Path $AppDir 'app.py'), (Join-Path $AppDir 'deploy\windows\run-app.cmd'))) {
+    if (-not (Test-Path $Path)) { continue }
+    $Unsafe = (Get-Acl $Path).Access | Where-Object {
+        $Ace = $_
+        $Rights = [int64]$Ace.FileSystemRights
+        $Sid = try { $Ace.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch { $Ace.IdentityReference.Value }
+        $Ace.AccessControlType -eq 'Allow' -and
+        -not ($Ace.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and
+        (($Rights -band $WriteBits) -or ($Rights -band $GenericWriteBits)) -and
+        $TrustedSids -notcontains $Sid
+    }
+    if ($Unsafe) {
+        $Who = ($Unsafe | ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique) -join ', '
+        Write-Error ("Not only administrators can change '$Path' ($Who). Move the app to a folder that only " +
+                     "administrators can change, for example C:\Program Files\XY-MD02_WebApp, and run this script again.")
+        exit 1
+    }
+}
 
 # Python 3.10+ (py launcher from python.org, otherwise python on PATH)
 $Python = $null
@@ -68,20 +101,37 @@ Write-Host '-> Installing dependencies'
 & $VenvPython -m pip install --quiet -r (Join-Path $AppDir 'requirements.txt')
 if ($LASTEXITCODE -ne 0) { Write-Error 'Installing dependencies failed.'; exit 1 }
 
-# Scheduled task: at startup, as SYSTEM, no time limit, restart if the task itself fails
+# LOCAL SERVICE cannot read other users' profile folders: Python must be installed for all users
+$BasePrefix = (& $VenvPython -c 'import sys; print(sys.base_prefix)').Trim()
+if ($BasePrefix -like "$env:SystemDrive\Users\*") {
+    Write-Error ("Python is installed for one user only ($BasePrefix). Reinstall Python from python.org with " +
+                 "'Install Python for all users' (Customize installation > Advanced Options), delete the .venv folder and run this script again.")
+    exit 1
+}
+
+# The service account only needs to write the database and the log
+foreach ($Folder in @('src', 'logs')) {
+    $Dir = Join-Path $AppDir $Folder
+    New-Item -ItemType Directory -Force -Path $Dir | Out-Null
+    icacls $Dir /grant '*S-1-5-19:(OI)(CI)M' | Out-Null   # LOCAL SERVICE: modify
+}
+
+# Scheduled task: at startup, as LOCAL SERVICE, no time limit, restart if the task itself fails
 Write-Host "-> Registering scheduled task '$TaskName'"
 $action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument "/c `"$Runner`"" -WorkingDirectory $AppDir
 $trigger = New-ScheduledTaskTrigger -AtStartup
-$taskPrincipal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+$taskPrincipal = New-ScheduledTaskPrincipal -UserId 'NT AUTHORITY\LOCAL SERVICE' -LogonType ServiceAccount -RunLevel Limited
 $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
     -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $taskPrincipal `
     -Settings $taskSettings -Description 'XY-MD02 temperature and humidity WebApp' -Force | Out-Null
 
 # Firewall: allow the web port
-Write-Host "-> Opening TCP port $Port in the Windows firewall"
+$Profiles = if ($AllowPublic) { 'Domain,Private,Public' } else { 'Domain,Private' }
+Write-Host "-> Opening TCP port $Port in the Windows firewall ($Profiles networks)"
 Get-NetFirewallRule -DisplayName $FirewallRule -ErrorAction SilentlyContinue | Remove-NetFirewallRule
-New-NetFirewallRule -DisplayName $FirewallRule -Direction Inbound -Protocol TCP -LocalPort $Port -Action Allow | Out-Null
+New-NetFirewallRule -DisplayName $FirewallRule -Direction Inbound -Protocol TCP -LocalPort $Port -Action Allow `
+    -Profile $Profiles | Out-Null
 
 Start-ScheduledTask -TaskName $TaskName
 Start-Sleep -Seconds 5
