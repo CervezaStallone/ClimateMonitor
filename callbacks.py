@@ -6,10 +6,125 @@ from dash import callback_context, html, no_update, Input, Output, State
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+import devices
 import settings
 from translations import TRANSLATIONS
 from database import get_all_measurement_tables, build_union_query, DB_FILE
-from psychrometric import create_psychrometric_chart, create_psychrometric_chart_historical
+from psychrometric import add_device_points, create_psychrometric_chart, create_psychrometric_chart_historical
+
+DEVICE_COLORS = ['#3498db', '#e74c3c', '#27ae60', '#9b59b6', '#f39c12', '#16a085', '#d35400', '#2c3e50',
+                 '#c0392b', '#8e44ad', '#2980b9', '#7f8c8d']
+CARDS_STYLE = {'marginBottom': '30px'}
+
+
+def downsample(df, time_range_minutes):
+    """Adaptive downsampling voor betere performance bij lange tijdsbereiken.
+
+    Houdt max ~1000-2000 punten voor snelle rendering. df heeft een 'timestamp' kolom (datetime).
+    """
+    original_points = len(df)
+    if time_range_minutes > 60 or original_points > 5000:  # Meer dan 1 uur OF veel data
+        df = df.set_index('timestamp')
+        
+        if time_range_minutes == -1:  # Alle data: intelligente sampling
+            total_days = (df.index.max() - df.index.min()).total_seconds() / 86400
+            if total_days > 365:  # > 1 jaar: 1 dag gemiddelde
+                df = df.resample('1D').mean()
+            elif total_days > 90:  # 3-12 maanden: 6 uur gemiddelde
+                df = df.resample('6h').mean()
+            elif total_days > 30:  # 1-3 maanden: 2 uur gemiddelde
+                df = df.resample('2h').mean()
+            else:  # < 1 maand: 1 uur gemiddelde
+                df = df.resample('1h').mean()
+        elif time_range_minutes <= 360:  # 1-6 uur: 1 minuut
+            df = df.resample('1min').mean()
+        elif time_range_minutes <= 1440:  # 6-24 uur: 5 minuten
+            df = df.resample('5min').mean()
+        elif time_range_minutes <= 10080:  # 1-7 dagen: 15 minuten
+            df = df.resample('15min').mean()
+        elif time_range_minutes <= 43200:  # 1 maand: 1 uur
+            df = df.resample('1h').mean()
+        elif time_range_minutes <= 129600:  # 3 maanden: 3 uur
+            df = df.resample('3h').mean()
+        elif time_range_minutes <= 259200:  # 6 maanden: 6 uur
+            df = df.resample('6h').mean()
+        else:  # > 6 maanden: 1 dag
+            df = df.resample('1D').mean()
+        
+        df = df.dropna().reset_index()
+        
+        if settings.get('debug_logging'):
+            reduction = 100 * (1 - len(df)/original_points)
+            print(f"   → Downsampled: {original_points} → {len(df)} punten (-{reduction:.1f}%)")
+    return df
+
+
+def humidex_score(temp, hum):
+    """Comfort score 0-6 op basis van Humidex (Environment Canada schaal)"""
+    if pd.isna(temp) or pd.isna(hum):
+        return None
+    dewpoint_kelvin = temp - ((100 - hum) / 5.0) + 273.15
+    e = 6.11 * math.exp(5417.7530 * ((1/273.16) - (1/dewpoint_kelvin)))
+    humidex = temp + 0.5555 * (e - 10)
+    for limit, score in ((20, 0), (27, 4), (30, 5), (35, 6), (40, 3), (46, 2), (54, 1)):
+        if humidex < limit:
+            return score
+    return 0
+
+
+def combined_figure(df, names, time_range_minutes, t):
+    """Eén grafiek per grootheid met een lijn per device."""
+    fig = make_subplots(
+        rows=5, cols=1,
+        subplot_titles=(f'🌡️ {t["temperature"]}', f'💧 {t["humidity"]}', f'💦 {t["dewpoint"]}', f'🌫️ {t["abs_humidity"]}', f'😊 {t["comfort"]}'),
+        vertical_spacing=0.08
+    )
+    metrics = [('temperature', '°C', '.1f'), ('humidity', '%', '.1f'), ('dewpoint', '°C', '.1f'),
+               ('absolute_humidity', 'g/m³', '.1f'), ('comfort_score', '', '')]
+    for index, (device_id, name) in enumerate(names.items()):
+        group = df[df['device_id'] == device_id].drop(columns='device_id')
+        if group.empty:
+            continue
+        group = downsample(group, time_range_minutes)
+        group['comfort_score'] = [humidex_score(tmp, hum) for tmp, hum in zip(group['temperature'], group['humidity'])]
+        color = DEVICE_COLORS[index % len(DEVICE_COLORS)]
+        for row, (column, unit, fmt) in enumerate(metrics, start=1):
+            fig.add_trace(go.Scatter(
+                x=group['timestamp'], y=group[column], mode='lines', name=name, legendgroup=str(device_id),
+                showlegend=row == 1, line=dict(color=color, width=2.5),
+                hovertemplate=f'<b>{name}</b>: %{{y:{fmt}}}{unit}<extra></extra>'
+            ), row=row, col=1)
+    for row, title in enumerate([f"{t['temperature']} (°C)", f"{t['humidity']} (%)", f"{t['dewpoint']} (°C)",
+                                 f"{t['abs_humidity']} (g/m³)", t['score']], start=1):
+        fig.update_yaxes(title_text=title, row=row, col=1, showgrid=True, gridcolor='rgba(0,0,0,0.05)')
+    fig.update_yaxes(range=[0, 100], row=2, col=1)
+    fig.update_yaxes(range=[-0.5, 6.5], tickmode='linear', tick0=0, dtick=1, row=5, col=1)
+    fig.update_xaxes(title_text=t['time'], row=5, col=1, showgrid=True, gridcolor='rgba(0,0,0,0.05)')
+    fig.update_layout(
+        height=1100,
+        showlegend=True,
+        legend=dict(orientation='h', yanchor='bottom', y=1.03, xanchor='center', x=0.5),
+        hovermode='x unified',
+        plot_bgcolor='rgba(0,0,0,0.02)',
+        paper_bgcolor='white',
+        margin=dict(l=60, r=30, t=80, b=40),
+        uirevision='constant'
+    )
+    return fig
+
+
+def latest_per_device():
+    """Laatste meting per device uit de twee meest recente dagtabellen: {device_id: (ts, temp, rh, dauwpunt)}"""
+    conn = sqlite3.connect(DB_FILE)
+    try:
+        latest = {}
+        for table in get_all_measurement_tables(conn.cursor())[-2:]:
+            for device_id, ts, temp, hum, dew in conn.execute(
+                    f'SELECT device_id, MAX(timestamp), temperature, humidity, dewpoint FROM {table} GROUP BY device_id'):
+                latest[device_id] = (ts, temp, hum, dew)
+        return latest
+    finally:
+        conn.close()
 
 
 def register_callbacks(app):
@@ -31,7 +146,8 @@ def register_callbacks(app):
          Output('label-psychrometric-chart', 'children'),
          Output('label-time-position', 'children'),
          Output('tab-dashboard', 'label'),
-         Output('tab-settings', 'label')],
+         Output('tab-settings', 'label'),
+         Output('label-device', 'children')],
         [Input('language-selector', 'value')]
     )
     def update_language(lang):
@@ -103,7 +219,8 @@ def register_callbacks(app):
             f"📐 {t['psychrometric_chart']}",
             t['time_position'],
             t['tab_dashboard'],
-            t['tab_settings']
+            t['tab_settings'],
+            t['lbl_device_select']
         )
     
     @app.callback(
@@ -116,14 +233,16 @@ def register_callbacks(app):
          Output('comfort-level', 'children'),
          Output('comfort-score', 'children'),
          Output('comfort-icon', 'children'),
-         Output('graph-relayout-data', 'data')],
+         Output('graph-relayout-data', 'data'),
+         Output('current-cards', 'style')],
         [Input('graph-update', 'n_intervals'),
          Input('time-range-dropdown', 'value'),
          Input('live-graph', 'relayoutData'),
-         Input('selected-language', 'data')],
+         Input('selected-language', 'data'),
+         Input('device-selector', 'value')],
         [State('graph-relayout-data', 'data')]
     )
-    def update_graph(n, time_range_minutes, relayout_data, lang, stored_relayout):
+    def update_graph(n, time_range_minutes, relayout_data, lang, device_sel, stored_relayout):
         """Update grafieken en metingen op basis van tijdsbereik"""
         if lang is None:
             lang = 'nl'
@@ -172,12 +291,14 @@ def register_callbacks(app):
             result = cursor.execute(f'SELECT COUNT(*) FROM {table}').fetchone()
             total_count += result[0] if result else 0
         
-        # Bepaal tijdsfilter en bouw query
-        columns = ['timestamp', 'temperature', 'humidity', 'dewpoint', 'absolute_humidity']
+        # Bepaal tijdsfilter en bouw query (0 = alle devices gecombineerd)
+        combined = not device_sel
+        device_filter = None if combined else int(device_sel)
+        columns = ['timestamp', 'temperature', 'humidity', 'dewpoint', 'absolute_humidity'] + (['device_id'] if combined else [])
         
         if time_range_minutes == -1:
             # Alle data
-            query, table_count = build_union_query(cursor, columns)
+            query, table_count = build_union_query(cursor, columns, device_id=device_filter)
             if settings.get('debug_logging'):
                 print(f"📊 Query voor ALLE data - aantal tabellen: {table_count}")
         else:
@@ -186,7 +307,7 @@ def register_callbacks(app):
             cutoff_timestamp = int(cutoff_time.timestamp())
             if settings.get('debug_logging'):
                 print(f"📊 Query voor laatste {time_range_minutes} minuten (vanaf {cutoff_time.strftime('%Y-%m-%d %H:%M:%S')})")
-            query, table_count = build_union_query(cursor, columns, start_timestamp=cutoff_timestamp)
+            query, table_count = build_union_query(cursor, columns, start_timestamp=cutoff_timestamp, device_id=device_filter)
             if settings.get('debug_logging'):
                 print(f"   → Aantal relevante tabellen: {table_count}")
         
@@ -205,48 +326,19 @@ def register_callbacks(app):
         if relayout_data and isinstance(relayout_data, dict) and any(key.startswith(('xaxis', 'yaxis')) for key in relayout_data.keys()):
             stored_relayout = relayout_data
         
+        cards_style = {**CARDS_STYLE, 'display': 'none'} if combined else CARDS_STYLE
         if df.empty:
-            return go.Figure(), f"{total_count} {t['measurements']}", "-- °C", "-- %", "-- °C", "-- g/m³", t['no_data'], "--", "❓", stored_relayout
+            return go.Figure(), f"{total_count} {t['measurements']}", "-- °C", "-- %", "-- °C", "-- g/m³", t['no_data'], "--", "❓", stored_relayout, cards_style
         
         # Converteer integer timestamps naar datetime objecten (lokale tijd)
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s').dt.tz_localize('UTC').dt.tz_convert(settings.get('timezone')).dt.tz_localize(None)
         
-        # Adaptive downsampling voor betere performance bij lange tijdsbereiken
-        # Houdt max ~1000-2000 punten voor snelle rendering
-        original_points = len(df)
-        if time_range_minutes > 60 or original_points > 5000:  # Meer dan 1 uur OF veel data
-            df = df.set_index('timestamp')
-            
-            if time_range_minutes == -1:  # Alle data: intelligente sampling
-                total_days = (df.index.max() - df.index.min()).total_seconds() / 86400
-                if total_days > 365:  # > 1 jaar: 1 dag gemiddelde
-                    df = df.resample('1D').mean()
-                elif total_days > 90:  # 3-12 maanden: 6 uur gemiddelde
-                    df = df.resample('6h').mean()
-                elif total_days > 30:  # 1-3 maanden: 2 uur gemiddelde
-                    df = df.resample('2h').mean()
-                else:  # < 1 maand: 1 uur gemiddelde
-                    df = df.resample('1h').mean()
-            elif time_range_minutes <= 360:  # 1-6 uur: 1 minuut
-                df = df.resample('1min').mean()
-            elif time_range_minutes <= 1440:  # 6-24 uur: 5 minuten
-                df = df.resample('5min').mean()
-            elif time_range_minutes <= 10080:  # 1-7 dagen: 15 minuten
-                df = df.resample('15min').mean()
-            elif time_range_minutes <= 43200:  # 1 maand: 1 uur
-                df = df.resample('1h').mean()
-            elif time_range_minutes <= 129600:  # 3 maanden: 3 uur
-                df = df.resample('3h').mean()
-            elif time_range_minutes <= 259200:  # 6 maanden: 6 uur
-                df = df.resample('6h').mean()
-            else:  # > 6 maanden: 1 dag
-                df = df.resample('1D').mean()
-            
-            df = df.dropna().reset_index()
-            
-            if settings.get('debug_logging'):
-                reduction = 100 * (1 - len(df)/original_points)
-                print(f"   → Downsampled: {original_points} → {len(df)} punten (-{reduction:.1f}%)")
+        if combined:
+            names = {d['id']: d['name'] for d in devices.list_devices()}
+            fig = combined_figure(df, names, time_range_minutes, t)
+            return fig, f"📊 {total_count} {t['measurements']}", "-- °C", "-- %", "-- °C", "-- g/m³", "", "--", "", stored_relayout, cards_style
+        
+        df = downsample(df, time_range_minutes)
         
         df['timestamp_formatted'] = df['timestamp'].dt.strftime('%d-%m-%Y %H:%M:%S')
         
@@ -476,18 +568,25 @@ def register_callbacks(app):
         # Bepaal comfort level (retourneert nu ook humidex)
         comfort_text, comfort_score, comfort_icon, humidex = get_comfort_level(latest_temp, latest_humidity)
         
-        return fig, f"📊 {total_count} {t['measurements']}", f"{latest_temp:.1f} °C", f"{latest_humidity:.1f} %", f"{latest_dewpoint:.1f} °C", f"{latest_abs_humidity:.1f} g/m³", comfort_text, str(comfort_score), comfort_icon, stored_relayout
+        return fig, f"📊 {total_count} {t['measurements']}", f"{latest_temp:.1f} °C", f"{latest_humidity:.1f} %", f"{latest_dewpoint:.1f} °C", f"{latest_abs_humidity:.1f} g/m³", comfort_text, str(comfort_score), comfort_icon, stored_relayout, cards_style
     
     # Callback voor psychrometric chart
     @app.callback(
         Output('psychrometric-chart', 'figure'),
         [Input('graph-update', 'n_intervals'),
-         Input('selected-language', 'data')]
+         Input('selected-language', 'data'),
+         Input('device-selector', 'value')]
     )
-    def update_psychrometric_chart(n, lang):
-        """Update psychrometrisch diagram met actuele meetwaarden"""
+    def update_psychrometric_chart(n, lang, device_sel):
+        """Update psychrometrisch diagram met actuele meetwaarden (alle devices of één device)"""
         if lang is None:
             lang = 'nl'
+        
+        if not device_sel:
+            latest = latest_per_device()
+            points = [(d['name'], latest[d['id']][1], latest[d['id']][2], DEVICE_COLORS[i % len(DEVICE_COLORS)])
+                      for i, d in enumerate(devices.list_devices()) if d['id'] in latest]
+            return add_device_points(create_psychrometric_chart(None, None, lang), points)
         
         # Haal laatste meting op uit database
         try:
@@ -498,7 +597,7 @@ def register_callbacks(app):
             tables = get_all_measurement_tables(cursor)
             if tables:
                 latest_table = tables[-1]  # Laatste tabel (meest recente datum)
-                query = f'SELECT temperature, humidity FROM {latest_table} ORDER BY timestamp DESC LIMIT 1'
+                query = f'SELECT temperature, humidity FROM {latest_table} WHERE device_id = {int(device_sel)} ORDER BY timestamp DESC LIMIT 1'
                 df = pd.read_sql_query(query, conn)
             else:
                 df = pd.DataFrame(columns=['temperature', 'humidity'])
@@ -631,9 +730,10 @@ def register_callbacks(app):
          Output('historical-time-slider', 'marks'),
          Output('slider-container', 'style')],
         [Input('selected-range-value', 'data'),
-         Input('selected-language', 'data')]
+         Input('selected-language', 'data')],
+        State('device-selector', 'value')
     )
-    def load_historical_data(range_value, lang):
+    def load_historical_data(range_value, lang, device_sel):
         """Laad historische data voor geselecteerde periode (preset of custom)"""
         if lang is None:
             lang = 'nl'
@@ -677,7 +777,8 @@ def register_callbacks(app):
             end_timestamp = int(end_dt.timestamp())
             
             columns = ['timestamp', 'temperature', 'humidity']
-            query, table_count = build_union_query(cursor, columns, start_timestamp, end_timestamp)
+            query, table_count = build_union_query(cursor, columns, start_timestamp, end_timestamp,
+                                                   device_id=int(device_sel) if device_sel else None)
             
             if query:
                 df = pd.read_sql_query(query, conn)
@@ -795,3 +896,71 @@ def register_callbacks(app):
         except Exception as e:
             print(f"Fout bij updaten historische view: {e}")
             return t['no_data_in_range'], create_psychrometric_chart(None, None, lang)
+
+    @app.callback(
+        Output('device-selector', 'options'),
+        [Input('url', 'pathname'),
+         Input('selected-language', 'data'),
+         Input('main-tabs', 'value')]
+    )
+    def update_device_options(pathname, lang, tab):
+        """Keuzelijst: alle devices gecombineerd + elk device"""
+        t = TRANSLATIONS.get(lang) or TRANSLATIONS['en']
+        return [{'label': t['opt_all_devices'], 'value': 0}] + [
+            {'label': f"#{d['id']} {d['name']}", 'value': d['id']} for d in devices.list_devices()]
+
+    @app.callback(
+        [Output('history-controls', 'style'),
+         Output('history-hint', 'children'),
+         Output('slider-container', 'style', allow_duplicate=True)],
+        Input('device-selector', 'value'),
+        State('selected-language', 'data'),
+        prevent_initial_call='initial_duplicate'
+    )
+    def toggle_history_controls(device_sel, lang):
+        """Historische replay werkt per device"""
+        t = TRANSLATIONS.get(lang) or TRANSLATIONS['en']
+        if device_sel:
+            return {'textAlign': 'center', 'marginBottom': '20px'}, '', no_update
+        return {'display': 'none'}, t['hint_select_device_history'], {'display': 'none'}
+
+    @app.callback(
+        Output('device-overview', 'children'),
+        [Input('graph-update', 'n_intervals'),
+         Input('selected-language', 'data'),
+         Input('device-selector', 'value')]
+    )
+    def update_device_overview(n, lang, device_sel):
+        """Kaart per device met actuele waarden en online/offline status"""
+        if n and n % 2 and callback_context.triggered_id == 'graph-update':
+            return no_update
+        t = TRANSLATIONS.get(lang) or TRANSLATIONS['en']
+        latest = latest_per_device()
+        offline_after = max(3 * settings.get('poll_interval_seconds'), 30)
+        now = datetime.now().timestamp()
+        cards = []
+        for index, device in enumerate(devices.list_devices(enabled_only=True)):
+            ts, temp, hum, dew = latest.get(device['id'], (None, None, None, None))
+            online = ts is not None and now - ts <= offline_after
+            error = devices.status(device['id']).get('error')
+            color = DEVICE_COLORS[index % len(DEVICE_COLORS)]
+            if ts is None:
+                state = t['status_never']
+            elif online:
+                state = f"🟢 {t['online']}"
+            else:
+                state = f"🔴 {t['offline']} · {t['last_value'].format(time=datetime.fromtimestamp(ts).strftime('%d-%m %H:%M'))}"
+            cards.append(html.Div([
+                html.Div(device['name'], style={'fontWeight': 'bold', 'color': color, 'fontSize': '16px'}),
+                html.Div(f"#{device['id']}", style={'fontSize': '11px', 'color': '#95a5a6'}),
+                html.Div(f"🌡️ {temp:.1f} °C   💧 {hum:.1f} %   💦 {dew:.1f} °C" if ts is not None else "--",
+                         style={'fontSize': '15px', 'margin': '6px 0', 'color': '#2c3e50', 'whiteSpace': 'pre'}),
+                html.Div(state, style={'fontSize': '12px', 'color': '#27ae60' if online else '#c0392b'}),
+                html.Div(error, style={'fontSize': '11px', 'color': '#c0392b'}) if error and not online else None,
+            ], style={
+                'display': 'inline-block', 'verticalAlign': 'top', 'minWidth': '220px', 'margin': '0 12px 12px 0',
+                'padding': '12px 16px', 'background': 'white', 'borderRadius': '12px',
+                'boxShadow': '0 4px 6px rgba(0,0,0,0.1)', 'borderLeft': f'5px solid {color}',
+                'outline': f'2px solid {color}' if device_sel == device['id'] else 'none'
+            }))
+        return cards

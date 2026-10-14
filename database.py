@@ -22,10 +22,24 @@ def ensure_table_exists(cursor, table_name):
             temperature REAL NOT NULL,
             humidity REAL NOT NULL,
             dewpoint REAL,
-            absolute_humidity REAL
+            absolute_humidity REAL,
+            device_id INTEGER NOT NULL DEFAULT 1
         )
     ''')
     cursor.execute(f'CREATE INDEX IF NOT EXISTS idx_{table_name}_timestamp ON {table_name}(timestamp)')
+    cursor.execute(f'CREATE INDEX IF NOT EXISTS idx_{table_name}_device ON {table_name}(device_id, timestamp)')
+
+
+def migrate_device_column(cursor):
+    """Upgrade van oudere versies: device_id kolom toevoegen (bestaande metingen = device 1).
+
+    ALTER TABLE ADD COLUMN met DEFAULT herschrijft geen bestaande rijen, dus ook snel bij grote databases.
+    """
+    for table_name in get_all_measurement_tables(cursor):
+        columns = [row[1] for row in cursor.execute(f'PRAGMA table_info({table_name})')]
+        if 'device_id' not in columns:
+            cursor.execute(f'ALTER TABLE {table_name} ADD COLUMN device_id INTEGER NOT NULL DEFAULT 1')
+            cursor.execute(f'CREATE INDEX IF NOT EXISTS idx_{table_name}_device ON {table_name}(device_id, timestamp)')
 
 
 def get_all_measurement_tables(cursor):
@@ -62,8 +76,8 @@ def get_tables_for_timerange(cursor, start_timestamp=None, end_timestamp=None):
     return relevant_tables if relevant_tables else all_tables
 
 
-def build_union_query(cursor, columns, start_timestamp=None, end_timestamp=None, order_by='timestamp'):
-    """Bouw UNION ALL query over relevante tabellen"""
+def build_union_query(cursor, columns, start_timestamp=None, end_timestamp=None, order_by='timestamp', device_id=None):
+    """Bouw UNION ALL query over relevante tabellen (optioneel gefilterd op één device)"""
     tables = get_tables_for_timerange(cursor, start_timestamp, end_timestamp)
     
     if not tables:
@@ -83,12 +97,14 @@ def build_union_query(cursor, columns, start_timestamp=None, end_timestamp=None,
     queries = []
     
     for table in tables:
-        if start_timestamp or end_timestamp:
+        if start_timestamp or end_timestamp or device_id is not None:
             where_clauses = []
             if start_timestamp:
-                where_clauses.append(f'timestamp >= {start_timestamp}')
+                where_clauses.append(f'timestamp >= {int(start_timestamp)}')
             if end_timestamp:
-                where_clauses.append(f'timestamp <= {end_timestamp}')
+                where_clauses.append(f'timestamp <= {int(end_timestamp)}')
+            if device_id is not None:
+                where_clauses.append(f'device_id = {int(device_id)}')
             where_clause = ' AND '.join(where_clauses)
             queries.append(f'SELECT {column_list} FROM {table} WHERE {where_clause}')
         else:
@@ -119,7 +135,8 @@ def init_database():
         cursor.execute('PRAGMA temp_store=MEMORY')
         cursor.execute('PRAGMA wal_autocheckpoint=1000')
         
-        # Maak tabel voor vandaag aan
+        # Upgrade bestaande tabellen en maak tabel voor vandaag aan
+        migrate_device_column(cursor)
         today_table = get_table_name()
         ensure_table_exists(cursor, today_table)
         

@@ -1,14 +1,20 @@
-"""Settings tab: formulier opgebouwd uit settings.SCHEMA, opslaan, wachtwoord wijzigen."""
+"""Settings tab: formulier opgebouwd uit settings.SCHEMA, Modbus bussen/devices, opslaan, wachtwoord wijzigen."""
+import time
 from urllib.parse import quote
 from zoneinfo import available_timezones
 
-from dash import ALL, Input, Output, State, callback_context, dcc, html, no_update
+from dash import ALL, Input, Output, State, callback_context, dash_table, dcc, html, no_update
 
 import auth
+import devices
 import settings
 from translations import LANGUAGE_NAMES, TRANSLATIONS
 
-SECTIONS = ['regional', 'data', 'server', 'security']
+SECTIONS = ['modbus', 'regional', 'data', 'server', 'security']
+
+BUS_COLUMNS = ['name', 'port', 'baudrate', 'bytesize', 'parity', 'stopbits', 'timeout', 'enabled']
+DEVICE_COLUMNS = ['id', 'name', 'bus', 'slave_id', 'function_code', 'register_temp', 'register_humidity',
+                  'scale_temp', 'scale_humidity', 'enabled']
 
 _TIMEZONES = sorted(available_timezones())
 
@@ -62,9 +68,96 @@ def _field(key, value, t):
     ], style={'marginBottom': '18px'})
 
 
+def _yes_no(t):
+    return [{'label': t['opt_yes'], 'value': 'true'}, {'label': t['opt_no'], 'value': 'false'}]
+
+
+def _table_rows(rows, columns):
+    """Database rijen naar DataTable rijen (bool als 'true'/'false', id blijft mee voor bijwerken)."""
+    return [{**{c: ('true' if r[c] else 'false') if isinstance(r.get(c), bool) else r.get(c) for c in columns},
+             'id': r.get('id')} for r in rows]
+
+
+def _bus_table(buses, t):
+    choices = {'baudrate': devices.BAUDRATES, 'bytesize': [7, 8], 'parity': ['N', 'E', 'O'], 'stopbits': [1, 2]}
+    return dash_table.DataTable(
+        id='bus-table',
+        columns=[{'id': c, 'name': t[f'col_{c}'], 'presentation': 'dropdown' if c in choices or c == 'enabled' else 'input',
+                  'type': 'numeric' if c == 'timeout' else 'any'} for c in BUS_COLUMNS],
+        data=_table_rows(buses, BUS_COLUMNS),
+        editable=True, row_deletable=True,
+        dropdown={**{c: {'options': [{'label': str(v), 'value': v} for v in opts], 'clearable': False}
+                     for c, opts in choices.items()},
+                  'enabled': {'options': _yes_no(t), 'clearable': False}},
+        **TABLE_STYLE)
+
+
+def _device_table(device_rows, bus_names, t):
+    return dash_table.DataTable(
+        id='device-table',
+        columns=[{'id': c, 'name': t[f'col_{c}'], 'editable': c != 'id',
+                  'presentation': 'dropdown' if c in ('bus', 'function_code', 'enabled') else 'input',
+                  'type': 'numeric' if c.startswith(('slave', 'register', 'scale')) else 'any'} for c in DEVICE_COLUMNS],
+        data=_table_rows(device_rows, DEVICE_COLUMNS),
+        editable=True, row_deletable=True,
+        dropdown={'bus': {'options': [{'label': n, 'value': n} for n in bus_names], 'clearable': False},
+                  'function_code': {'options': [{'label': t['opt_function_code_3'], 'value': 3},
+                                                {'label': t['opt_function_code_4'], 'value': 4}], 'clearable': False},
+                  'enabled': {'options': _yes_no(t), 'clearable': False}},
+        **TABLE_STYLE)
+
+
+TABLE_STYLE = {
+    'style_table': {'overflowX': 'auto', 'marginBottom': '10px'},
+    'style_cell': {'fontFamily': 'Arial, sans-serif', 'fontSize': '14px', 'padding': '6px', 'minWidth': '70px'},
+    'style_header': {'backgroundColor': '#ecf0f1', 'fontWeight': 'bold', 'color': '#2c3e50'},
+    'css': [{'selector': '.Select-menu-outer', 'rule': 'display: block !important'}],
+}
+
+
+def _modbus_section(t):
+    buses, device_rows = devices.load_config()
+    ports = devices.available_ports()
+    small = {'fontSize': '12px', 'color': '#7f8c8d', 'marginBottom': '8px'}
+    add_style = {**BUTTON_STYLE, 'padding': '6px 14px', 'fontSize': '14px', 'background': '#3498db'}
+    return [
+        html.H4(t['table_buses'], style={'color': '#2c3e50', 'marginBottom': '6px'}),
+        _bus_table(buses, t),
+        html.Div(t['hint_ports'].format(ports=', '.join(ports)) if ports else t['hint_no_ports'], style=small),
+        html.Button(t['btn_add_bus'], id='add-bus', n_clicks=0, style=add_style),
+        html.H4(t['table_devices'], style={'color': '#2c3e50', 'margin': '20px 0 6px'}),
+        html.Div(t['hint_registers'], style=small),
+        _device_table(device_rows, [b['name'] for b in buses], t),
+        html.Button(t['btn_add_device'], id='add-device', n_clicks=0, style=add_style),
+        html.Div(id='modbus-errors', style={'color': '#c0392b', 'fontWeight': 'bold', 'marginTop': '10px'}),
+        html.H4(t['lbl_device_status'], style={'color': '#2c3e50', 'margin': '20px 0 6px'}),
+        html.Div(id='device-status', children=device_status_list(t)),
+    ]
+
+
+def device_status_list(t):
+    """Live status per device: laatste waarden of laatste fout."""
+    items = []
+    now = time.time()
+    for dev in devices.load_config()[1]:
+        state = devices.status(dev['id'])
+        if not dev['enabled']:
+            text, color = t['status_disabled'], '#7f8c8d'
+        elif state.get('ok_at') and not state.get('error'):
+            text = t['status_ok'].format(temp=state['temperature'], hum=state['humidity'], ago=int(now - state['ok_at']))
+            color = '#27ae60'
+        elif state.get('error'):
+            text, color = t['status_error'].format(error=state['error']), '#c0392b'
+        else:
+            text, color = t['status_never'], '#7f8c8d'
+        items.append(html.Li([html.Strong(f"#{dev['id']} {dev['name']} ({dev['bus']}, slave {dev['slave_id']}): "),
+                              html.Span(text, style={'color': color})]))
+    return html.Ul(items, style={'paddingLeft': '20px', 'margin': '0'})
+
+
 def _section(name, values, t):
     keys = [k for k, spec in settings.SCHEMA.items() if spec['section'] == name]
-    extra = []
+    extra = _modbus_section(t) if name == 'modbus' else []
     if name == 'data':
         extra.append(html.Div([
             html.Label(t['lbl_database_file'], style=LABEL_STYLE),
@@ -150,10 +243,12 @@ def register_settings_callbacks(app):
          Output('settings-status', 'style')],
         Input('settings-save', 'n_clicks'),
         [State({'type': 'setting', 'key': ALL}, 'value'),
-         State('selected-language', 'data')],
+         State('selected-language', 'data'),
+         State('bus-table', 'data'),
+         State('device-table', 'data')],
         prevent_initial_call=True
     )
-    def save_settings(n_clicks, values, lang):
+    def save_settings(n_clicks, values, lang, bus_rows, device_rows):
         t = _t(lang)
         keys = [item['id']['key'] for item in callback_context.states_list[0]]
         ok_style = {'marginTop': '10px', 'fontWeight': 'bold', 'color': '#27ae60'}
@@ -161,16 +256,105 @@ def register_settings_callbacks(app):
         if not auth.is_logged_in():
             return [''] * len(keys), t['settings_locked'], bad_style
 
+        # Eerst de Modbus configuratie valideren, zodat bij een fout niets wordt opgeslagen
+        _, _, modbus_errors = devices.validate_config(bus_rows or [], device_rows or [])
+        if modbus_errors:
+            return [''] * len(keys), t['msg_save_failed'], bad_style
+
         submitted = dict(zip(keys, values))
         before = settings.public_values()
         errors = settings.save(submitted)
         field_errors = [t.get(errors[k], errors[k]) if k in errors else '' for k in keys]
         if errors:
             return field_errors, t['msg_save_failed'], bad_style
+        devices.save_config(bus_rows or [], device_rows or [])
 
         restart_changed = any(settings.SCHEMA[k].get('restart') and settings.get(k) != before[k] for k in keys)
         message = t['msg_saved_restart'] if restart_changed else t['msg_saved']
         return field_errors, message, ok_style
+
+    @app.callback(
+        [Output('modbus-errors', 'children'),
+         Output('bus-table', 'style_data_conditional'),
+         Output('device-table', 'style_data_conditional'),
+         Output('bus-table', 'data', allow_duplicate=True),
+         Output('device-table', 'data', allow_duplicate=True)],
+        Input('settings-save', 'n_clicks'),
+        [State('bus-table', 'data'),
+         State('device-table', 'data'),
+         State('selected-language', 'data')],
+        prevent_initial_call=True
+    )
+    def show_modbus_errors(n_clicks, bus_rows, device_rows, lang):
+        """Markeer foute cellen; na succesvol opslaan de tabellen herladen (nieuwe rijen krijgen een id)."""
+        t = _t(lang)
+        if not auth.is_logged_in():
+            return no_update, no_update, no_update, no_update, no_update
+        _, _, errors = devices.validate_config(bus_rows or [], device_rows or [])
+        messages, styles = [], {'buses': [], 'devices': []}
+        for table in ('buses', 'devices'):
+            for row, fields in errors.get(table, {}).items():
+                for field, code in fields.items():
+                    messages.append(html.Li(t['row_error'].format(table=t[f'table_{table}'], row=row + 1,
+                                                                  field=t[f'col_{field}'], error=t.get(code, code))))
+                    styles[table].append({'if': {'row_index': row, 'column_id': field},
+                                          'backgroundColor': '#fadbd8', 'color': '#c0392b'})
+        if errors:
+            return html.Ul(messages), styles['buses'], styles['devices'], no_update, no_update
+        buses, device_rows = devices.load_config()
+        return '', [], [], _table_rows(buses, BUS_COLUMNS), _table_rows(device_rows, DEVICE_COLUMNS)
+
+    @app.callback(
+        Output('bus-table', 'data'),
+        Input('add-bus', 'n_clicks'),
+        State('bus-table', 'data'),
+        prevent_initial_call=True
+    )
+    def add_bus(n_clicks, rows):
+        rows = rows or []
+        used = {r.get('port') for r in rows}
+        port = next((p for p in devices.available_ports() if p not in used), '')
+        return rows + [{'id': None, 'name': f'Bus {len(rows) + 1}', 'port': port, 'baudrate': 9600, 'bytesize': 8,
+                        'parity': 'N', 'stopbits': 1, 'timeout': 1.0, 'enabled': 'true'}]
+
+    @app.callback(
+        Output('device-table', 'data'),
+        Input('add-device', 'n_clicks'),
+        [State('device-table', 'data'),
+         State('bus-table', 'data')],
+        prevent_initial_call=True
+    )
+    def add_device(n_clicks, rows, bus_rows):
+        rows = rows or []
+        bus_name = (bus_rows or [{}])[0].get('name', '')
+        used = {r.get('slave_id') for r in rows if r.get('bus') == bus_name}
+        slave_id = next(i for i in range(1, 248) if i not in used)
+        return rows + [{'id': None, 'name': f'Sensor {len(rows) + 1}', 'bus': bus_name, 'slave_id': slave_id,
+                        'function_code': 4, 'register_temp': 1, 'register_humidity': 2, 'scale_temp': 0.1,
+                        'scale_humidity': 0.1, 'enabled': 'true'}]
+
+    @app.callback(
+        Output('device-table', 'dropdown'),
+        Input('bus-table', 'data'),
+        State('device-table', 'dropdown'),
+        prevent_initial_call=True
+    )
+    def update_bus_choices(bus_rows, dropdown):
+        """Bus keuze in de device tabel volgt de (nog niet opgeslagen) bustabel."""
+        names = [r['name'] for r in bus_rows or [] if r.get('name')]
+        return {**dropdown, 'bus': {'options': [{'label': n, 'value': n} for n in names], 'clearable': False}}
+
+    @app.callback(
+        Output('device-status', 'children'),
+        Input('graph-update', 'n_intervals'),
+        [State('main-tabs', 'value'),
+         State('selected-language', 'data')],
+        prevent_initial_call=True
+    )
+    def refresh_device_status(n, tab, lang):
+        if tab != 'settings' or n % 3 or not auth.is_logged_in():
+            return no_update
+        return device_status_list(_t(lang))
 
     @app.callback(
         [Output('pw-status', 'children'),
