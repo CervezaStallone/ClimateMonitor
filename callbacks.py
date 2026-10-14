@@ -964,3 +964,27 @@ def register_callbacks(app):
                 'outline': f'2px solid {color}' if device_sel == device['id'] else 'none'
             }))
         return cards
+
+    PRESET_BUTTONS = ['5min', '10min', '30min', '1hour', '2hours', '6hours', '12hours', '24hours', '2days', 'week', 'month']
+
+    @app.callback(
+        [Output('open-range-modal-btn', 'children'),
+         Output('modal-title', 'children'),
+         Output('label-quick-select', 'children'),
+         Output('label-specific-period', 'children'),
+         Output('label-start-datetime', 'children'),
+         Output('label-end-datetime', 'children'),
+         Output('apply-custom-range-btn', 'children'),
+         Output('custom-start-date', 'placeholder'),
+         Output('custom-end-date', 'placeholder'),
+         Output('custom-start-hour', 'placeholder'),
+         Output('custom-end-hour', 'placeholder')] +
+        [Output(f'preset-{key}', 'children') for key in PRESET_BUTTONS],
+        Input('selected-language', 'data')
+    )
+    def update_history_language(lang):
+        """Teksten van de historische analyse (knop en keuzevenster) in de gekozen taal"""
+        t = TRANSLATIONS.get(lang) or TRANSLATIONS['en']
+        return [t['btn_select_range'], t['modal_title'], t['quick_select'], t['specific_period'], t['start_datetime'],
+                t['end_datetime'], t['btn_apply'], t['select_date'], t['select_date'], t['hour_placeholder'],
+                t['hour_placeholder']] + [t[f'btn_{key}'] for key in PRESET_BUTTONS]

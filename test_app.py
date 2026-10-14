@@ -722,6 +722,30 @@ def test_mqtt_test_connection_reports_errors():
     assert error and 'refused' in error.lower()
 
 
+# --- vertalingen --------------------------------------------------------------
+
+def test_translations_have_same_placeholders():
+    import string
+    reference = TRANSLATIONS['nl']
+    for lang, texts in TRANSLATIONS.items():
+        for key, text in texts.items():
+            names = {f[1] for f in string.Formatter().parse(text) if f[1]}
+            expected = {f[1] for f in string.Formatter().parse(reference[key]) if f[1]}
+            assert names == expected, (lang, key, names, expected)
+
+
+def test_layout_has_no_untranslated_dutch_text():
+    import json
+    import layout
+    import plotly
+    fresh_settings()
+    settings.save({'default_language': 'es'})
+    rendered = json.dumps(layout.create_layout(), cls=plotly.utils.PlotlyJSONEncoder, ensure_ascii=False)
+    for dutch in ('Laatste', 'Selecteer', 'Toepassen', 'Snelle selectie', 'Tijdstip', 'Temperatuur', 'uur', 'Maand'):
+        assert dutch not in rendered, dutch
+    assert 'Aplicar' in rendered and 'Selección rápida' in rendered
+
+
 if __name__ == '__main__':
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith('test_') and callable(fn)]
     failed = 0

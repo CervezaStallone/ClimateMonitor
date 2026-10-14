@@ -122,7 +122,7 @@ def create_psychrometric_chart(current_temp, current_rh, lang='nl'):
             'font': {'size': 20, 'color': '#2c3e50', 'family': 'Arial Black'}
         },
         xaxis_title=t['dry_bulb_temp'],
-        yaxis_title='Vochtigheidsratio ω (g water / kg droge lucht)',
+        yaxis_title=t['humidity_ratio_axis'],
         xaxis=dict(
             range=[0, 40],
             showgrid=True,
@@ -264,7 +264,7 @@ def create_psychrometric_chart_historical(current_temp, current_rh, lang='nl', l
             'font': {'size': 20, 'color': '#2c3e50', 'family': 'Arial Black'}
         },
         xaxis_title=t['dry_bulb_temp'],
-        yaxis_title='Vochtigheidsratio ω (g water / kg droge lucht)',
+        yaxis_title=t['humidity_ratio_axis'],
         xaxis=dict(
             range=[0, 40],
             showgrid=True,
