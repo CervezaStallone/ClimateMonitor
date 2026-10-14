@@ -4,6 +4,7 @@ import logging
 
 # Import modules
 import auth
+import devices
 import settings
 from database import init_database, cleanup_old_data
 from modbus_reader import start_modbus_thread
@@ -18,6 +19,7 @@ logging.getLogger('waitress').setLevel(logging.ERROR)
 print("=== XY-MD02 WebApp Startup ===")
 settings.load()
 init_database()
+devices.init_devices()
 
 # Voer cleanup uit (indien retention policy actief)
 if settings.get('data_retention_days') > 0:

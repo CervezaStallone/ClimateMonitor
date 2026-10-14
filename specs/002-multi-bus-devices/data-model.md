@@ -5,7 +5,7 @@
 |--------|------|------------|
 | id | INTEGER PK | |
 | name | TEXT | 1–50 chars, unique |
-| port | TEXT | 1–100 chars, unique |
+| port | TEXT | 1–255 chars, unique (e.g. /dev/serial/by-id/...) |
 | baudrate | INTEGER | 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200 |
 | bytesize | INTEGER | 7, 8 |
 | parity | TEXT | N, E, O |

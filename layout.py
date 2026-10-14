@@ -109,8 +109,26 @@ def create_layout():
         
         dcc.Tabs(id='main-tabs', value='dashboard', children=[
         dcc.Tab(id='tab-dashboard', label=t['tab_dashboard'], value='dashboard', children=[
-        # Huidige waarden - alle 5 cards in een rij
+        # Device keuze: alle devices (gecombineerd) of één device
         html.Div([
+            html.Label(id='label-device', children=t['lbl_device_select'], style={
+                'fontSize': '16px', 'fontWeight': 'bold', 'color': '#2c3e50', 'marginRight': '15px'
+            }),
+            dcc.Dropdown(id='device-selector', value=0, clearable=False,
+                         style={'width': '350px', 'display': 'inline-block', 'verticalAlign': 'middle'})
+        ], style={
+            'margin': '20px 0',
+            'padding': '15px 20px',
+            'background': 'white',
+            'borderRadius': '15px',
+            'boxShadow': '0 4px 6px rgba(0,0,0,0.1)'
+        }),
+        
+        # Overzicht per device (status en actuele waarden)
+        html.Div(id='device-overview', style={'marginBottom': '20px'}),
+        
+        # Huidige waarden - alle 5 cards in een rij (alleen bij één geselecteerd device)
+        html.Div(id='current-cards', children=[
             # Temperatuur
             html.Div([
                 html.Div([
@@ -325,8 +343,9 @@ def create_layout():
                 config={'displayModeBar': True, 'displaylogo': False}
             ),
             
-            # Knop om bereik te kiezen
-            html.Div([
+            # Knop om bereik te kiezen (alleen bij één geselecteerd device)
+            html.Div(id='history-hint', style={'textAlign': 'center', 'color': '#7f8c8d', 'marginTop': '20px'}),
+            html.Div(id='history-controls', children=[
                 html.Button(
                     id='open-range-modal-btn',
                     children='📅 Kies bereik voor historische analyse',

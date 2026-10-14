@@ -291,3 +291,26 @@ def create_psychrometric_chart_historical(current_temp, current_rh, lang='nl', l
     )
     
     return fig
+
+
+def add_device_points(fig, points):
+    """Voeg de huidige toestand van meerdere devices toe aan een Mollier diagram.
+
+    points: [(naam, temperatuur, rv, kleur)]
+    """
+    for name, temp, rh, color in points:
+        pws = 611.2 * np.exp(17.62 * temp / (243.12 + temp))
+        pw = pws * (rh / 100.0)
+        w_g_kg = 0.622 * pw / (101325 - pw) * 1000
+        fig.add_trace(go.Scatter(
+            x=[temp],
+            y=[w_g_kg],
+            mode='markers+text',
+            name=name,
+            marker=dict(size=14, color=color, symbol='star', line=dict(width=2, color='white')),
+            text=[name],
+            textposition='top center',
+            textfont=dict(size=12, color=color, family='Arial Black'),
+            hovertemplate=f'{name}<br>T: {temp:.1f}°C<br>RH: {rh:.0f}%<br>ω: {w_g_kg:.1f} g/kg<extra></extra>'
+        ))
+    return fig
