@@ -12,11 +12,26 @@ os.environ['TIMEZONE'] = 'Europe/Madrid'
 os.environ['DATA_RETENTION_DAYS'] = 'veel'      # ongeldig -> standaardwaarde
 os.environ['DEBUG_LOGGING'] = 'True'
 os.environ['APP_HOST'] = '127.0.0.1'            # wordt bewust niet overgenomen
+os.environ['MODBUS_PORT'] = '/dev/ttyTEST0'
+os.environ['MODBUS_SLAVE_ID'] = '7'
+os.environ['MODBUS_PARITY'] = 'X'               # ongeldig -> standaardwaarde
 
+import queue  # noqa: E402
+import sqlite3  # noqa: E402
+from datetime import datetime  # noqa: E402
+
+import minimalmodbus  # noqa: E402
+import serial  # noqa: E402
 from flask import Flask  # noqa: E402
 
 import auth  # noqa: E402
+import database  # noqa: E402
+import devices  # noqa: E402
+import modbus_reader  # noqa: E402
 import settings  # noqa: E402
+from translations import TRANSLATIONS  # noqa: E402
+
+TRANSLATIONS_NL = TRANSLATIONS['nl']
 
 
 def fresh_settings():
@@ -25,6 +40,7 @@ def fresh_settings():
         os.remove(settings.DB_FILE)
     settings._cache.clear()
     settings.load()
+    devices._status.clear()
 
 
 def make_client():
@@ -279,6 +295,167 @@ def test_ipv6_clients_grouped_per_64():
     assert auth._client_key('2001:db8::1') == auth._client_key('2001:db8::ffff:1234')
     assert auth._client_key('2001:db8:0:1::1') != auth._client_key('2001:db8::1')
     assert auth._client_key('::ffff:192.0.2.7') == '192.0.2.7'
+
+
+# --- bussen en devices ------------------------------------------------------
+
+def bus(name='Bus 1', port='/dev/ttyUSB0', **extra):
+    return {'name': name, 'port': port, 'baudrate': 9600, 'bytesize': 8, 'parity': 'N', 'stopbits': 1,
+            'timeout': 0.5, 'enabled': True, **extra}
+
+
+def device(name='Sensor 1', bus_name='Bus 1', slave_id=1, **extra):
+    return {'name': name, 'bus': bus_name, 'slave_id': slave_id, 'function_code': 4, 'register_temp': 1,
+            'register_humidity': 2, 'scale_temp': 0.1, 'scale_humidity': 0.1, 'enabled': True, **extra}
+
+
+def test_devices_migration_from_env():
+    fresh_settings()
+    devices.init_devices()
+    buses, devs = devices.load_config()
+    assert len(buses) == 1 and buses[0]['port'] == '/dev/ttyTEST0' and buses[0]['parity'] == 'N'
+    assert len(devs) == 1 and devs[0]['slave_id'] == 7 and devs[0]['name'] == 'Sensor 1' and devs[0]['bus'] == 'Bus 1'
+    devices.init_devices()                                   # tweede start: niets dubbel
+    assert len(devices.load_config()[1]) == 1
+
+
+def test_devices_validation():
+    fresh_settings()
+    ok = devices.save_config([bus(), bus('Bus 2', '/dev/ttyUSB1')],
+                             [device(), device('Sensor 2', slave_id=2), device('Sensor 3', 'Bus 2', slave_id=1)])
+    assert ok == {}                                          # zelfde slave id op andere bus mag
+    errors = devices.save_config([bus(), bus('bus 1', '/dev/ttyUSB0', baudrate=1234)],
+                                 [device(), device('SENSOR 1', slave_id=1), device('X', 'Bus 9'), device('Y', slave_id=300)])
+    assert errors['buses'] == {1: {'name': 'err_duplicate', 'port': 'err_duplicate', 'baudrate': 'err_choice'}}
+    assert errors['devices'][1] == {'name': 'err_duplicate', 'slave_id': 'err_duplicate'}
+    assert errors['devices'][2] == {'bus': 'err_bus_unknown'}
+    assert errors['devices'][3] == {'slave_id': 'err_range'}
+    assert len(devices.load_config()[1]) == 3                # niets opgeslagen bij fouten
+    assert devices.save_config([bus()], [device(scale_temp=0)])['devices'][0] == {'scale_temp': 'err_range'}
+    assert devices.save_config([bus()], [device(name='')])['devices'][0] == {'name': 'err_required'}
+
+
+def test_devices_ids_stable_on_rename_and_swap():
+    fresh_settings()
+    devices.save_config([bus()], [device('A', slave_id=1), device('B', slave_id=2)])
+    buses, devs = devices.load_config()
+    a, b = devs
+    # Namen en slave ids omwisselen, bus hernoemen: ids blijven, geen UNIQUE fout
+    assert devices.save_config([{**buses[0], 'name': 'Hal'}],
+                               [{**a, 'name': 'B', 'slave_id': 2, 'bus': 'Hal'},
+                                {**b, 'name': 'A', 'slave_id': 1, 'bus': 'Hal'}]) == {}
+    after = {d['id']: d for d in devices.load_config()[1]}
+    assert after[a['id']]['name'] == 'B' and after[b['id']]['name'] == 'A' and after[a['id']]['bus'] == 'Hal'
+    version = devices.version()
+    assert devices.save_config(devices.load_config()[0], [after[a['id']]]) == {}   # B verwijderd
+    assert [d['id'] for d in devices.load_config()[1]] == [a['id']] and devices.version() == version + 1
+
+
+def test_measurement_tables_get_device_column():
+    fresh_settings()
+    conn = sqlite3.connect(settings.DB_FILE)
+    conn.execute('CREATE TABLE measurements_20250101 (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp INTEGER NOT NULL, '
+                 'temperature REAL NOT NULL, humidity REAL NOT NULL, dewpoint REAL, absolute_humidity REAL)')
+    conn.execute('INSERT INTO measurements_20250101 (timestamp, temperature, humidity) VALUES (1735725600, 20.5, 50)')
+    conn.commit()
+    conn.close()
+    database.init_database()
+    conn = sqlite3.connect(settings.DB_FILE)
+    assert conn.execute('SELECT device_id FROM measurements_20250101').fetchone() == (1,)
+    conn.execute('INSERT INTO measurements_20250101 (timestamp, temperature, humidity, device_id) VALUES (1735725601, 9, 9, 2)')
+    query, _ = database.build_union_query(conn.cursor(), ['timestamp', 'temperature'], device_id=2)
+    assert conn.execute(query).fetchall() == [(1735725601, 9.0)]
+    conn.close()
+
+
+class FakeInstrument:
+    """Sensor met signed 16-bit registers; raise = geen antwoord."""
+
+    def __init__(self, registers=None, fail=False):
+        self.registers, self.fail = registers or {}, fail
+        self.serial = type('S', (), {'close': lambda self: None})()
+
+    def read_register(self, register, decimals, functioncode, signed=False):
+        assert signed and decimals == 0
+        if self.fail:
+            raise minimalmodbus.NoResponseError('No communication with the instrument (no answer)')
+        return self.registers[register]
+
+
+def test_poller_reads_signed_scaled_values_and_isolates_failures():
+    fresh_settings()
+    q = queue.Queue()
+    dev_ok = {**device('Koelcel'), 'id': 1}
+    dev_bad = {**device('Kapot', slave_id=2), 'id': 2}
+    dev_range = {**device('Raar', slave_id=3), 'id': 3}
+    poller = modbus_reader.BusPoller({**bus(), 'id': 1}, [dev_bad, dev_ok, dev_range], q)
+    poller.poll(FakeInstrument(fail=True), dev_bad)
+    poller.poll(FakeInstrument({1: -55, 2: 873}), dev_ok)          # -5.5 °C, 87.3 %
+    poller.poll(FakeInstrument({1: 2000, 2: 500}), dev_range)       # 200 °C: buiten bereik
+    row = q.get_nowait()
+    assert row[1:3] == (-5.5, 87.3) and row[5] == 1 and q.empty()
+    assert devices.status(1)['temperature'] == -5.5 and devices.status(1)['error'] is None
+    assert 'no answer' in devices.status(2)['error'] and 'out of range' in devices.status(3)['error']
+
+
+def test_poller_survives_missing_interface():
+    fresh_settings()
+    calls = []
+
+    def missing_port(bus_cfg, dev):
+        calls.append(1)
+        raise serial.SerialException('could not open port /dev/ttyUSB9')
+    poller = modbus_reader.BusPoller({**bus(), 'id': 1}, [{**device(), 'id': 1}], queue.Queue(), missing_port)
+    poller.start()
+    time.sleep(1.5)
+    poller.stop()
+    poller.join(timeout=3)
+    assert not poller.is_alive() and len(calls) >= 2           # opnieuw geprobeerd, thread niet gecrasht
+    assert 'could not open port' in devices.status(1)['error']
+
+
+def test_writer_stores_device_and_splits_days():
+    fresh_settings()
+    database.init_database()
+    writer = modbus_reader.Writer(queue.Queue())
+    day1, day2 = int(datetime(2026, 10, 13, 23, 59, 59).timestamp()), int(datetime(2026, 10, 14, 0, 0, 1).timestamp())
+    writer.buffer = [(day1, 20.0, 50.0, 10.0, 8.6, 3), (day2, 21.0, 51.0, 11.2, 9.1, 4)]
+    conn = sqlite3.connect(settings.DB_FILE)
+    writer.flush(conn)
+    assert writer.buffer == []
+    assert conn.execute('SELECT device_id FROM measurements_20261013').fetchall() == [(3,)]
+    assert conn.execute('SELECT device_id FROM measurements_20261014').fetchall() == [(4,)]
+    conn.close()
+
+
+def test_settings_callbacks_require_login():
+    """Settings callbacks geven zonder login geen configuratie, poorten of status terug."""
+    import dash
+    import settings_ui
+    fresh_settings()
+    devices.init_devices()
+    auth.set_password('geheim123', 'geheim123')
+    app = dash.Dash(__name__, suppress_callback_exceptions=True)
+    auth.init_app(app.server)
+    settings_ui.register_settings_callbacks(app)
+    callbacks = {}
+    for entry in app.callback_map.values():
+        fn = getattr(entry['callback'], '__wrapped__', None)
+        if fn:
+            callbacks[fn.__name__] = fn
+    rows = [bus()]
+    with app.server.test_request_context():
+        assert callbacks['add_bus'](1, rows) is dash.no_update
+        assert callbacks['add_device'](1, [], rows) is dash.no_update
+        assert callbacks['update_bus_choices'](rows, {}) is dash.no_update
+        assert callbacks['refresh_device_status'](3, 'settings', 'nl') is dash.no_update
+        assert all(v is dash.no_update for v in callbacks['show_modbus_errors'](1, rows, [], 'nl'))
+        errors, status, _ = callbacks['save_settings'](1, [], 'nl', rows, [])
+        assert errors is dash.no_update and status == TRANSLATIONS_NL['settings_locked']
+        assert callbacks['change_password'](1, 'x', 'y', 'y', 'nl')[0] == TRANSLATIONS_NL['settings_locked']
+        assert 'admin' not in str(callbacks['show_settings']('settings', 'nl'))   # alleen het inlogscherm
+    assert set(callbacks) >= {'add_bus', 'add_device', 'update_bus_choices', 'refresh_device_status',
+                              'show_modbus_errors', 'save_settings', 'change_password', 'show_settings'}
 
 
 if __name__ == '__main__':
