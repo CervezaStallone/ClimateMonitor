@@ -63,7 +63,7 @@ SCHEMA = {
 # Een opgeslagen secret gaat alleen naar dezelfde bestemming. Wijzigt een van deze velden, dan moet
 # het secret opnieuw ingevuld worden (anders kan het naar een andere server gestuurd worden).
 SECRET_BOUND_TO = {
-    'smtp_password': ['smtp_host', 'smtp_port', 'smtp_username'],
+    'smtp_password': ['smtp_host', 'smtp_port', 'smtp_username', 'smtp_security'],   # ook geen downgrade naar onversleuteld
 }
 
 # Als een kanaal aan staat moeten deze velden ingevuld zijn
