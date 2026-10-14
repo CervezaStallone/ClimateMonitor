@@ -5,9 +5,9 @@ import os
 import sqlite3
 from datetime import datetime
 from dotenv import load_dotenv
+import settings
 from database import (
     DB_FILE, 
-    DATA_RETENTION_DAYS, 
     get_table_name, 
     ensure_table_exists, 
     cleanup_old_data
@@ -95,7 +95,7 @@ def read_modbus_data():
     while True:
         try:
             # Voer cleanup uit elke 24 uur
-            if DATA_RETENTION_DAYS > 0 and (datetime.now() - last_cleanup).total_seconds() >= 86400:
+            if settings.get('data_retention_days') > 0 and (datetime.now() - last_cleanup).total_seconds() >= 86400:
                 cleanup_old_data()
                 last_cleanup = datetime.now()
             

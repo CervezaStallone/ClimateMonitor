@@ -1,19 +1,9 @@
 import sqlite3
 import os
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
 
-# Laad environment variabelen
-load_dotenv()
-
-# Database configuratie
-DB_FILE = os.getenv('DATABASE_FILE', 'src/modbus_sensor_data.db')
-DATA_RETENTION_DAYS = int(os.getenv('DATA_RETENTION_DAYS', '0'))  # 0 = oneindig, anders aantal dagen
-DEBUG_LOGGING = os.getenv('DEBUG_LOGGING', 'False').lower() == 'true'
-
-if DATA_RETENTION_DAYS < 0:
-    print(f"Waarschuwing: DATA_RETENTION_DAYS kan niet negatief zijn ({DATA_RETENTION_DAYS}), gebruik 0 voor oneindig")
-    DATA_RETENTION_DAYS = 0
+import settings
+from settings import DB_FILE
 
 
 def get_table_name(date=None):
@@ -77,11 +67,11 @@ def build_union_query(cursor, columns, start_timestamp=None, end_timestamp=None,
     tables = get_tables_for_timerange(cursor, start_timestamp, end_timestamp)
     
     if not tables:
-        if DEBUG_LOGGING:
+        if settings.get('debug_logging'):
             print("⚠️ build_union_query: Geen tabellen gevonden voor tijdsbereik")
         return None, None
     
-    if DEBUG_LOGGING:
+    if settings.get('debug_logging'):
         print(f"🔍 build_union_query: Relevante tabellen: {tables}")
         if start_timestamp:
             print(f"   → Start timestamp: {start_timestamp} ({datetime.fromtimestamp(start_timestamp)})")
@@ -137,8 +127,9 @@ def init_database():
         conn.close()
         print(f"Database geïnitialiseerd: {DB_FILE} (WAL mode, partitioned)")
         print(f"Actieve tabel: {today_table}")
-        if DATA_RETENTION_DAYS > 0:
-            print(f"Data retentie actief: {DATA_RETENTION_DAYS} dagen")
+        retention_days = settings.get('data_retention_days')
+        if retention_days > 0:
+            print(f"Data retentie actief: {retention_days} dagen")
         else:
             print("Data retentie: oneindig (alle data wordt bewaard)")
     except Exception as e:
@@ -149,11 +140,12 @@ def init_database():
 
 def cleanup_old_data():
     """Verwijder oude data op basis van retention policy (DROP oude tabellen)"""
-    if DATA_RETENTION_DAYS == 0:
+    retention_days = settings.get('data_retention_days')  # 0 = oneindig, anders aantal dagen
+    if retention_days == 0:
         return  # Geen cleanup als retentie oneindig is
     
     try:
-        cutoff_date = datetime.now() - timedelta(days=DATA_RETENTION_DAYS)
+        cutoff_date = datetime.now() - timedelta(days=retention_days)
         conn = sqlite3.connect(DB_FILE, timeout=30)
         cursor = conn.cursor()
         
@@ -171,7 +163,7 @@ def cleanup_old_data():
                 if table_date < cutoff_date:
                     cursor.execute(f'DROP TABLE IF EXISTS {table_name}')
                     dropped_count += 1
-                    print(f"✓ Tabel {table_name} verwijderd (ouder dan {DATA_RETENTION_DAYS} dagen)")
+                    print(f"✓ Tabel {table_name} verwijderd (ouder dan {retention_days} dagen)")
             except ValueError:
                 # Ongeldige tabel naam, skip
                 continue

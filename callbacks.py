@@ -1,21 +1,15 @@
 import sqlite3
 import math
-import os
 import pandas as pd
 from datetime import datetime, timedelta
 from dash import callback_context, html, no_update, Input, Output, State
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from dotenv import load_dotenv
 
+import settings
 from translations import TRANSLATIONS
 from database import get_all_measurement_tables, build_union_query, DB_FILE
 from psychrometric import create_psychrometric_chart, create_psychrometric_chart_historical
-
-# Laad environment variabelen
-load_dotenv()
-TIMEZONE = os.getenv('TIMEZONE', 'Europe/Amsterdam')
-DEBUG_LOGGING = os.getenv('DEBUG_LOGGING', 'False').lower() == 'true'
 
 
 def register_callbacks(app):
@@ -35,7 +29,9 @@ def register_callbacks(app):
          Output('tooltip-content', 'children'),
          Output('time-range-dropdown', 'options'),
          Output('label-psychrometric-chart', 'children'),
-         Output('label-time-position', 'children')],
+         Output('label-time-position', 'children'),
+         Output('tab-dashboard', 'label'),
+         Output('tab-settings', 'label')],
         [Input('language-selector', 'value')]
     )
     def update_language(lang):
@@ -105,7 +101,9 @@ def register_callbacks(app):
             tooltip_content,
             dropdown_options,
             f"📐 {t['psychrometric_chart']}",
-            t['time_position']
+            t['time_position'],
+            t['tab_dashboard'],
+            t['tab_settings']
         )
     
     @app.callback(
@@ -180,25 +178,25 @@ def register_callbacks(app):
         if time_range_minutes == -1:
             # Alle data
             query, table_count = build_union_query(cursor, columns)
-            if DEBUG_LOGGING:
+            if settings.get('debug_logging'):
                 print(f"📊 Query voor ALLE data - aantal tabellen: {table_count}")
         else:
             # Filter op tijdsbereik
             cutoff_time = datetime.now() - timedelta(minutes=time_range_minutes)
             cutoff_timestamp = int(cutoff_time.timestamp())
-            if DEBUG_LOGGING:
+            if settings.get('debug_logging'):
                 print(f"📊 Query voor laatste {time_range_minutes} minuten (vanaf {cutoff_time.strftime('%Y-%m-%d %H:%M:%S')})")
             query, table_count = build_union_query(cursor, columns, start_timestamp=cutoff_timestamp)
-            if DEBUG_LOGGING:
+            if settings.get('debug_logging'):
                 print(f"   → Aantal relevante tabellen: {table_count}")
         
         if query:
             df = pd.read_sql_query(query, conn)
-            if DEBUG_LOGGING:
+            if settings.get('debug_logging'):
                 print(f"   → Opgehaalde datapunten: {len(df)}")
         else:
             df = pd.DataFrame(columns=columns)
-            if DEBUG_LOGGING:
+            if settings.get('debug_logging'):
                 print("   ⚠️ Geen query gegenereerd (geen relevante tabellen)")
         
         conn.close()
@@ -211,7 +209,7 @@ def register_callbacks(app):
             return go.Figure(), f"{total_count} {t['measurements']}", "-- °C", "-- %", "-- °C", "-- g/m³", t['no_data'], "--", "❓", stored_relayout
         
         # Converteer integer timestamps naar datetime objecten (lokale tijd)
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s').dt.tz_localize('UTC').dt.tz_convert(TIMEZONE).dt.tz_localize(None)
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s').dt.tz_localize('UTC').dt.tz_convert(settings.get('timezone')).dt.tz_localize(None)
         
         # Adaptive downsampling voor betere performance bij lange tijdsbereiken
         # Houdt max ~1000-2000 punten voor snelle rendering
@@ -246,7 +244,7 @@ def register_callbacks(app):
             
             df = df.dropna().reset_index()
             
-            if DEBUG_LOGGING:
+            if settings.get('debug_logging'):
                 reduction = 100 * (1 - len(df)/original_points)
                 print(f"   → Downsampled: {original_points} → {len(df)} punten (-{reduction:.1f}%)")
         
@@ -296,13 +294,13 @@ def register_callbacks(app):
                     score = 0
                 
                 # Debug output alleen voor eerste 5 punten
-                if DEBUG_LOGGING and comfort_debug_counter[0] < 5:
+                if settings.get('debug_logging') and comfort_debug_counter[0] < 5:
                     print(f"   Debug comfort #{comfort_debug_counter[0]+1}: T={temp:.1f}°C, RH={hum:.1f}%, Humidex={humidex:.1f}, Score={score}")
                     comfort_debug_counter[0] += 1
                 
                 return score
             except Exception as e:
-                if DEBUG_LOGGING:
+                if settings.get('debug_logging'):
                     print(f"   Error calculating comfort score: {e}")
                 return None
         
@@ -692,7 +690,7 @@ def register_callbacks(app):
                 return None, 0, 100, 0, {}, {'display': 'none'}
             
             # Converteer integer timestamps naar datetime objecten (lokale tijd)
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s').dt.tz_localize('UTC').dt.tz_convert(TIMEZONE).dt.tz_localize(None)
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s').dt.tz_localize('UTC').dt.tz_convert(settings.get('timezone')).dt.tz_localize(None)
             
             # Bepaal tijdsverschil in minuten
             time_diff_minutes = (end_dt - start_dt).total_seconds() / 60
