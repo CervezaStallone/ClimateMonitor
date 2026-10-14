@@ -19,7 +19,7 @@
 - **Rationale**: logout, password change and password reset must invalidate copied cookies, and the inactivity timeout must not be extendable by the client. A restart logs everyone out, which is acceptable.
 
 ## Throttling
-- **Decision**: in-memory failures per client (IPv4 address, IPv6 /64), 5 failures/5 min → block 5 min; plus a global cap of 50 failures/5 min; expired entries are pruned.
+- **Decision**: in-memory failures per client (IPv4 address, IPv6 /64), 5 failures/5 min → block 5 min; above 50 failures/5 min across all clients each client gets only 1 attempt (a client without failures, i.e. the admin, can always log in); expired entries are pruned. Sessions store the hash that was actually verified, so a login racing a password change is not upgraded.
 - **Rationale**: single process; per-/64 and global caps stop bypass via many addresses; state loss on restart is acceptable.
 
 ## Host/port fallback
