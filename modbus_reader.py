@@ -1,208 +1,244 @@
-import minimalmodbus
-import time
+"""Modbus RTU uitlezen van meerdere bussen (RS-485 interfaces) met elk meerdere slaves.
+
+- Supervisor: start per actieve bus een BusPoller en herstart alleen bussen waarvan de
+  configuratie in Settings is gewijzigd (of waarvan de thread onverwacht gestopt is).
+- BusPoller: leest de devices op één bus na elkaar (RS-485 is half duplex). Bussen lopen
+  parallel, dus een trage of ontbrekende interface houdt de andere bussen niet op.
+- Writer: schrijft alle metingen in batches naar de database (minder schrijfacties = langere
+  levensduur van SD-kaart/flash).
+"""
 import math
-import os
+import queue
 import sqlite3
+import threading
+import time
 from datetime import datetime
-from dotenv import load_dotenv
+
+import minimalmodbus
+import serial
+
+import devices
 import settings
-from database import (
-    DB_FILE, 
-    get_table_name, 
-    ensure_table_exists, 
-    cleanup_old_data
-)
+from database import DB_FILE, cleanup_old_data, ensure_table_exists, get_table_name
 
-# Laad environment variabelen
-load_dotenv()
-
-# Modbus configuratie uit environment met validatie
-try:
-    MODBUS_PORT = os.getenv('MODBUS_PORT', 'COM11')
-    MODBUS_SLAVE_ID = int(os.getenv('MODBUS_SLAVE_ID', '1'))
-    MODBUS_BAUDRATE = int(os.getenv('MODBUS_BAUDRATE', '9600'))
-    MODBUS_BYTESIZE = int(os.getenv('MODBUS_BYTESIZE', '8'))
-    MODBUS_PARITY = os.getenv('MODBUS_PARITY', 'N')
-    MODBUS_STOPBITS = int(os.getenv('MODBUS_STOPBITS', '1'))
-    MODBUS_TIMEOUT = int(os.getenv('MODBUS_TIMEOUT', '1'))
-    MODBUS_FUNCTION_CODE = int(os.getenv('MODBUS_FUNCTION_CODE', '4'))
-    MODBUS_REGISTER_TEMP = int(os.getenv('MODBUS_REGISTER_TEMP', '1'))
-    MODBUS_REGISTER_HUMIDITY = int(os.getenv('MODBUS_REGISTER_HUMIDITY', '2'))
-    
-    # Valideer configuratie
-    if MODBUS_SLAVE_ID < 1 or MODBUS_SLAVE_ID > 247:
-        raise ValueError(f"MODBUS_SLAVE_ID moet tussen 1-247 zijn, kreeg: {MODBUS_SLAVE_ID}")
-    if MODBUS_BAUDRATE not in [1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200]:
-        print(f"Waarschuwing: Ongebruikelijke baudrate: {MODBUS_BAUDRATE}")
-    if MODBUS_PARITY not in ['N', 'E', 'O']:
-        raise ValueError(f"MODBUS_PARITY moet N, E of O zijn, kreeg: {MODBUS_PARITY}")
-    if MODBUS_TIMEOUT < 0:
-        raise ValueError(f"MODBUS_TIMEOUT moet positief zijn, kreeg: {MODBUS_TIMEOUT}")
-except ValueError as e:
-    print(f"FOUT in .env configuratie: {e}")
-    raise
-
-# Configuratie van Modbus RTU apparaat
-# Mapping voor parity settings
 PARITY_MAP = {
     'N': minimalmodbus.serial.PARITY_NONE,
     'E': minimalmodbus.serial.PARITY_EVEN,
     'O': minimalmodbus.serial.PARITY_ODD
 }
 
-# Global instrument variable - initialized lazily to avoid serial port access during import
-instrument = None
+# Geldige meetbereiken (buiten bereik = meting overgeslagen)
+TEMP_RANGE = (-50, 100)
+HUMIDITY_RANGE = (0, 100)
+
+BATCH_SIZE = 30          # metingen per database commit
+COMMIT_INTERVAL = 30     # seconden, maximaal tussen commits
+MAX_BUFFER = 10000       # bij langdurige databasefouten: oudste metingen vervallen
+MAX_BACKOFF = 60         # seconden tussen pogingen om een ontbrekende interface te openen
+SUPERVISOR_INTERVAL = 2  # seconden
 
 
-def _initialize_instrument():
-    """Initialize Modbus instrument - called only when needed, not during module import"""
-    global instrument
-    if instrument is None:
-        instrument = minimalmodbus.Instrument(MODBUS_PORT, MODBUS_SLAVE_ID)
-        instrument.serial.baudrate = MODBUS_BAUDRATE
-        instrument.serial.bytesize = MODBUS_BYTESIZE
-        instrument.serial.parity = PARITY_MAP.get(MODBUS_PARITY, minimalmodbus.serial.PARITY_NONE)
-        instrument.serial.stopbits = MODBUS_STOPBITS
-        instrument.serial.timeout = MODBUS_TIMEOUT
+def derived_values(temperature, humidity):
+    """Bereken dauwpunt (°C) en absolute vochtigheid (g/m³)."""
+    dewpoint = temperature - ((100 - humidity) / 5.0)
+    # Formule: AH = (6.112 × e^((17.67 × T)/(T+243.5)) × RH × 2.1674) / (273.15+T)
+    absolute_humidity = (6.112 * math.exp((17.67 * temperature) / (temperature + 243.5)) * humidity * 2.1674) / (273.15 + temperature)
+    return dewpoint, absolute_humidity
+
+
+def read_device(instrument, device):
+    """Lees temperatuur en luchtvochtigheid (signed registers × schaal)."""
+    raw_temp = instrument.read_register(device['register_temp'], 0, device['function_code'], signed=True)
+    raw_humidity = instrument.read_register(device['register_humidity'], 0, device['function_code'], signed=True)
+    return round(raw_temp * device['scale_temp'], 3), round(raw_humidity * device['scale_humidity'], 3)
+
+
+def open_instrument(bus, device):
+    """Maak een Modbus instrument; slaves op dezelfde poort delen de seriële verbinding."""
+    instrument = minimalmodbus.Instrument(bus['port'], device['slave_id'])
+    instrument.serial.baudrate = bus['baudrate']
+    instrument.serial.bytesize = bus['bytesize']
+    instrument.serial.parity = PARITY_MAP.get(bus['parity'], minimalmodbus.serial.PARITY_NONE)
+    instrument.serial.stopbits = bus['stopbits']
+    instrument.serial.timeout = bus['timeout']
+    if not instrument.serial.is_open:
+        instrument.serial.open()
     return instrument
 
 
-def read_modbus_data():
-    """Thread functie om Modbus data te lezen en op te slaan"""
-    print(f"→ Modbus thread actief - verbinding maken met {MODBUS_PORT}...")
-    
-    # Initialize instrument now (not during import)
-    _initialize_instrument()
-    
-    last_cleanup = datetime.now()
-    current_table = get_table_name()
-    
-    # Optimalisatie: Hergebruik database connectie en batch inserts
-    conn = sqlite3.connect(DB_FILE, timeout=30)
-    cursor = conn.cursor()
-    cursor.execute('PRAGMA journal_mode=WAL')
-    cursor.execute('PRAGMA synchronous=NORMAL')
-    
-    print(f"✓ Database connectie OK - schrijven naar tabel: {current_table}")
-    
-    # Buffer voor batch inserts (30 metingen = 30 seconden)
-    # Optimalisatie: minder schrijfoperaties = langere levensduur database/storage
-    measurement_buffer = []
-    BATCH_SIZE = 30
-    last_commit_time = time.time()
-    COMMIT_INTERVAL = 30  # seconds
-    
-    while True:
-        try:
-            # Voer cleanup uit elke 24 uur
-            if settings.get('data_retention_days') > 0 and (datetime.now() - last_cleanup).total_seconds() >= 86400:
+class Writer(threading.Thread):
+    """Schrijft metingen (timestamp, temp, rh, dauwpunt, abs. vochtigheid, device_id) in batches."""
+
+    def __init__(self, measurements):
+        super().__init__(daemon=True, name='modbus-writer')
+        self.measurements = measurements
+        self.buffer = []
+        self.last_commit = time.time()
+        self.last_cleanup = time.time()
+
+    def run(self):
+        conn = sqlite3.connect(DB_FILE, timeout=30)
+        conn.execute('PRAGMA journal_mode=WAL')
+        conn.execute('PRAGMA synchronous=NORMAL')
+        while True:
+            try:
+                self.buffer.append(self.measurements.get(timeout=1))
+            except queue.Empty:
+                pass
+            if len(self.buffer) >= BATCH_SIZE or (self.buffer and time.time() - self.last_commit >= COMMIT_INTERVAL):
+                self.flush(conn)
+            # Retentie: elke 24 uur oude dagtabellen verwijderen
+            if settings.get('data_retention_days') > 0 and time.time() - self.last_cleanup >= 86400:
                 cleanup_old_data()
-                last_cleanup = datetime.now()
-            
-            register_temp = instrument.read_register(MODBUS_REGISTER_TEMP, 0, MODBUS_FUNCTION_CODE)
-            register_humidity = instrument.read_register(MODBUS_REGISTER_HUMIDITY, 0, MODBUS_FUNCTION_CODE)
-            
-            temperature = register_temp / 10
-            humidity = register_humidity / 10
-            
-            # Valideer sensor data
-            if not (-50 <= temperature <= 100):
-                print(f"Waarschuwing: Ongeldige temperatuur {temperature}°C - meting overgeslagen")
-                time.sleep(1)
-                continue
-            
-            if not (0 <= humidity <= 100):
-                print(f"Waarschuwing: Ongeldige luchtvochtigheid {humidity}% - meting overgeslagen")
-                time.sleep(1)
-                continue
-            
-            # Bereken dauwpunt
-            dewpoint = temperature - ((100 - humidity) / 5.0)
-            
-            # Bereken absolute vochtigheid (g/m³)
-            # Formule: AH = (6.112 × e^((17.67 × T)/(T+243.5)) × RH × 2.1674) / (273.15+T)
-            absolute_humidity = (6.112 * math.exp((17.67 * temperature) / (temperature + 243.5)) * humidity * 2.1674) / (273.15 + temperature)
-            
-            # Bereken Humidex
-            # Formule: Humidex = T + 0.5555 × (e - 10)
-            # waarbij e = 6.11 × e^(5417.7530 × (1/273.16 - 1/(273.15+Td)))
-            # en Td = dauwpunt in Kelvin
-            dewpoint_kelvin = dewpoint + 273.15
-            e = 6.11 * math.exp(5417.7530 * ((1/273.16) - (1/dewpoint_kelvin)))
-            humidex = temperature + 0.5555 * (e - 10)
-            
-            # Opslaan in buffer (integer timestamp voor performance)
-            timestamp = datetime.now()
-            timestamp_int = int(timestamp.timestamp())
-            measurement_buffer.append((timestamp_int, temperature, humidity, dewpoint, absolute_humidity))
-            
-            print(f"{timestamp.strftime('%H:%M:%S')} - Temperature: {temperature:.1f}°C, Humidity: {humidity:.1f}%, Dewpoint: {dewpoint:.1f}°C, Absolute Humidity: {absolute_humidity:.1f}g/m³")
-            
-            # Check of we een nieuwe dag zijn (table switch)
-            new_table = get_table_name()
-            if new_table != current_table:
-                # Flush buffer naar oude tabel
-                if measurement_buffer:
-                    cursor.execute('BEGIN')
-                    cursor.executemany(
-                        f'INSERT INTO {current_table} (timestamp, temperature, humidity, dewpoint, absolute_humidity) VALUES (?, ?, ?, ?, ?)',
-                        measurement_buffer
-                    )
-                    conn.commit()
-                    print(f"✓ {len(measurement_buffer)} metingen opgeslagen in {current_table} (dag wissel)")
-                    measurement_buffer.clear()
-                
-                # Maak nieuwe tabel aan en switch
-                ensure_table_exists(cursor, new_table)
-                conn.commit()
-                current_table = new_table
-                print(f"→ Nieuwe dag: nu schrijven naar {current_table}")
-            
-            # Batch commit: als buffer vol is OF tijd verstreken
-            current_time = time.time()
-            if len(measurement_buffer) >= BATCH_SIZE or (current_time - last_commit_time) >= COMMIT_INTERVAL:
-                if measurement_buffer:
-                    cursor.execute('BEGIN')
-                    cursor.executemany(
-                        f'INSERT INTO {current_table} (timestamp, temperature, humidity, dewpoint, absolute_humidity) VALUES (?, ?, ?, ?, ?)',
-                        measurement_buffer
-                    )
-                    conn.commit()
-                    print(f"✓ {len(measurement_buffer)} metingen opgeslagen in {current_table} (batch commit)")
-                    measurement_buffer.clear()
-                    last_commit_time = current_time
-            
-            time.sleep(1)
+                self.last_cleanup = time.time()
+
+    def flush(self, conn):
+        """Schrijf de buffer weg, per dagtabel (dag wissel binnen een batch gaat zo vanzelf goed)."""
+        try:
+            per_table = {}
+            for row in self.buffer:
+                per_table.setdefault(get_table_name(datetime.fromtimestamp(row[0])), []).append(row)
+            conn.execute('BEGIN')
+            for table, rows in per_table.items():
+                ensure_table_exists(conn.cursor(), table)
+                conn.executemany(
+                    f'INSERT INTO {table} (timestamp, temperature, humidity, dewpoint, absolute_humidity, device_id) '
+                    'VALUES (?, ?, ?, ?, ?, ?)', rows)
+            conn.commit()
+            if settings.get('debug_logging'):
+                print(f"✓ {len(self.buffer)} metingen opgeslagen")
+            self.buffer.clear()
         except Exception as e:
-            print(f"Modbus fout: {e}")
-            # Bij fout: probeer buffer alsnog op te slaan
-            if measurement_buffer:
-                try:
-                    cursor.executemany(
-                        f'INSERT INTO {current_table} (timestamp, temperature, humidity, dewpoint, absolute_humidity) VALUES (?, ?, ?, ?, ?)',
-                        measurement_buffer
-                    )
-                    conn.commit()
-                    measurement_buffer.clear()
-                except:
-                    pass
-            time.sleep(5)
+            conn.rollback()
+            print(f"Database fout, metingen blijven in buffer ({len(self.buffer)}): {e}")
+            del self.buffer[:-MAX_BUFFER]
+        self.last_commit = time.time()
+
+
+class BusPoller(threading.Thread):
+    """Leest alle actieve devices op één bus, opnieuw verbinden met back-off bij fouten."""
+
+    def __init__(self, bus, bus_devices, measurements, instrument_factory=open_instrument):
+        super().__init__(daemon=True, name=f"modbus-bus-{bus['id']}")
+        self.bus = bus
+        self.devices = bus_devices
+        self.measurements = measurements
+        self.instrument_factory = instrument_factory
+        self.stop_event = threading.Event()
+        self.last_errors = {}
+
+    def stop(self):
+        self.stop_event.set()
+
+    def run(self):
+        backoff = 1
+        while not self.stop_event.is_set():
+            instruments = {}
+            try:
+                instruments = {d['id']: self.instrument_factory(self.bus, d) for d in self.devices}
+                print(f"✓ {self.bus['name']} verbonden ({self.bus['port']}, {len(self.devices)} device(s))")
+                backoff = 1
+                while not self.stop_event.is_set():
+                    started = time.time()
+                    for device in self.devices:
+                        if self.stop_event.is_set():
+                            break
+                        self.poll(instruments[device['id']], device)
+                    interval = settings.get('poll_interval_seconds')
+                    self.stop_event.wait(max(0, interval - (time.time() - started)))
+            except (serial.SerialException, OSError) as e:
+                # Interface ontbreekt of is losgekoppeld: alle devices op deze bus melden, later opnieuw
+                for device in self.devices:
+                    self.report_error(device, e)
+                self.stop_event.wait(backoff)
+                backoff = min(backoff * 2, MAX_BACKOFF)
+            finally:
+                for instrument in instruments.values():
+                    try:
+                        instrument.serial.close()
+                    except Exception:
+                        pass
+
+    def poll(self, instrument, device):
+        """Lees één device. Device fouten (geen antwoord) raken andere devices niet."""
+        try:
+            temperature, humidity = read_device(instrument, device)
+        except minimalmodbus.ModbusException as e:
+            # Device fout (geen/ongeldig antwoord). Let op: subklasse van OSError, dus vóór OSError afvangen
+            self.report_error(device, e)
+            return
+        except (serial.SerialException, OSError):
+            raise  # interface weg: hele bus opnieuw verbinden
+        except Exception as e:
+            self.report_error(device, e)
+            return
+        if not (TEMP_RANGE[0] <= temperature <= TEMP_RANGE[1]) or not (HUMIDITY_RANGE[0] <= humidity <= HUMIDITY_RANGE[1]):
+            self.report_error(device, f"out of range: {temperature} °C, {humidity} %")
+            return
+        dewpoint, absolute_humidity = derived_values(temperature, humidity)
+        self.measurements.put((int(time.time()), temperature, humidity, dewpoint, absolute_humidity, device['id']))
+        devices.report_ok(device['id'], temperature, humidity)
+        self.last_errors.pop(device['id'], None)
+        if settings.get('debug_logging'):
+            print(f"{datetime.now().strftime('%H:%M:%S')} - {device['name']}: {temperature:.1f}°C, {humidity:.1f}%")
+
+    def report_error(self, device, error):
+        devices.report_error(device['id'], error)
+        message = str(error)
+        if self.last_errors.get(device['id']) != message:  # zelfde fout niet elke seconde loggen
+            print(f"✗ {self.bus['name']} / {device['name']}: {message}")
+            self.last_errors[device['id']] = message
+
+
+class Supervisor(threading.Thread):
+    """Houdt per actieve bus een BusPoller in de lucht volgens de configuratie in Settings."""
+
+    def __init__(self, measurements, instrument_factory=open_instrument):
+        super().__init__(daemon=True, name='modbus-supervisor')
+        self.measurements = measurements
+        self.instrument_factory = instrument_factory
+        self.pollers = {}   # bus_id -> (configuratie, BusPoller)
+
+    def desired(self):
+        buses, all_devices = devices.load_config()
+        result = {}
+        for bus in buses:
+            bus_devices = [d for d in all_devices if d['bus_id'] == bus['id'] and d['enabled']]
+            if bus['enabled'] and bus_devices:
+                result[bus['id']] = (bus, bus_devices)
+        return result
+
+    def sync(self):
+        wanted = self.desired()
+        for bus_id, (config, poller) in list(self.pollers.items()):
+            if wanted.get(bus_id) != config or not poller.is_alive():
+                poller.stop()
+                poller.join(timeout=config[0]['timeout'] * 2 * len(config[1]) + 2)
+                del self.pollers[bus_id]
+        for bus_id, config in wanted.items():
+            if bus_id not in self.pollers:
+                poller = BusPoller(config[0], config[1], self.measurements, self.instrument_factory)
+                poller.start()
+                self.pollers[bus_id] = (config, poller)
+
+    def run(self):
+        seen_version = None
+        while True:
+            try:
+                dead = any(not poller.is_alive() for _, poller in self.pollers.values())
+                if devices.version() != seen_version or dead:
+                    seen_version = devices.version()
+                    self.sync()
+            except Exception as e:
+                print(f"Modbus supervisor fout: {e}")
+            time.sleep(SUPERVISOR_INTERVAL)
 
 
 def start_modbus_thread():
-    """Start Modbus reader thread als daemon"""
-    import threading
-    
-    # Test eerst of minimalmodbus werkt
-    try:
-        print(f"→ Start Modbus thread (poort: {MODBUS_PORT}, slave: {MODBUS_SLAVE_ID})")
-        modbus_thread = threading.Thread(target=read_modbus_data, daemon=True)
-        modbus_thread.start()
-        print("✓ Modbus reader thread gestart")
-        return modbus_thread
-    except Exception as e:
-        print(f"✗ FOUT bij starten Modbus thread: {e}")
-        print(f"   Type: {type(e).__name__}")
-        print("   Zorg dat je de app start met de virtual environment!")
-        print("   Gebruik: .venv\\Scripts\\python.exe app.py")
-        raise
+    """Start de database schrijver en de Modbus supervisor (beide daemon threads)."""
+    measurements = queue.Queue()
+    Writer(measurements).start()
+    supervisor = Supervisor(measurements)
+    supervisor.start()
+    print("✓ Modbus reader gestart (één thread per bus)")
+    return supervisor

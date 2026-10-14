@@ -27,6 +27,7 @@ LANGUAGES = ['nl', 'en', 'de', 'fr', 'es']
 
 # key -> type, default, .env naam, sectie, validatie (choices / min / max / check), restart nodig
 SCHEMA = {
+    'poll_interval_seconds': {'type': int, 'default': 1, 'section': 'modbus', 'min': 1, 'max': 3600},
     'data_retention_days': {'type': int, 'default': 0, 'env': 'DATA_RETENTION_DAYS', 'section': 'data',
                             'min': 0, 'max': 3650},
     'debug_logging': {'type': bool, 'default': False, 'env': 'DEBUG_LOGGING', 'section': 'data'},

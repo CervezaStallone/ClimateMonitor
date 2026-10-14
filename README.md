@@ -22,7 +22,8 @@ A professional real-time climate monitoring dashboard application for the XY-MD0
 - **Professional UI**: Modern dashboard with gradient header and card-based layout
 - **Zoom persistence**: Graph zoom stays preserved during live updates
 - **Robust**: Extensive input validation and error handling
-- **Configurable in the browser**: Settings tab for timezone, language, data retention, server and security
+- **Multiple sensors and RS-485 buses**: several USB/RS-485 interfaces, each with several Modbus slaves; combined and per-sensor graphs
+- **Configurable in the browser**: Settings tab for buses, sensors, timezone, language, data retention, server and security
 - **Login protection**: Admin password for the Settings tab, optionally for the whole app
 
 ### Screenshots
@@ -87,7 +88,7 @@ Copy the example configuration file:
 cp .env.example .env
 ```
 
-Adjust the Modbus settings in `.env` (all other settings are configured in the browser, see [Settings Tab](#settings-tab)):
+Optionally adjust `.env`. The Modbus values are only used once, to create the first bus and sensor; after that everything is configured in the browser (see [Settings Tab](#settings-tab)):
 ```env
 # Modbus Settings
 MODBUS_PORT=COM11
@@ -124,7 +125,8 @@ The application is now available at: `http://127.0.0.1:8050/`
 XY-MD02_WebApp/
 ├── app.py                      # Main entry point (45 lines)
 ├── database.py                 # Database operations, partitioning, WAL mode
-├── modbus_reader.py            # Modbus RTU communication, batch buffering
+├── modbus_reader.py            # Modbus RTU: one thread per bus, batched database writes
+├── devices.py                  # Buses and sensors configuration, live status
 ├── psychrometric.py            # Mollier diagram generation
 ├── callbacks.py                # Dash callbacks (7 functions)
 ├── settings.py                 # Settings stored in the database, validation, password reset
@@ -151,6 +153,7 @@ Open the **Settings** tab in the web app. The first visit asks you to create an 
 
 | Section | Settings |
 |---------|----------|
+| Modbus buses and sensors | Poll interval, buses (RS-485 interfaces), sensors (Modbus slaves) |
 | Region and language | Timezone, default language |
 | Data | Data retention (days, 0 = forever), debug logging |
 | Server | Listen address and port (*restart required*) |
@@ -173,7 +176,30 @@ Then open the Settings tab and set a new password straight away.
 
 > The app uses HTTP. On untrusted networks, put it behind a VPN or an HTTPS reverse proxy.
 
-#### Modbus Settings
+#### Multiple buses and sensors
+
+In **Settings → Modbus buses and sensors**:
+
+- **Buses**: one row per RS-485 interface (USB dongle), with port, baud rate, data bits, parity,
+  stop bits and timeout. Ports found on the device are listed below the table. Tip for Linux:
+  use the stable `/dev/serial/by-id/...` name, so ports do not swap after a reboot.
+- **Sensors**: one row per Modbus slave: name, bus, slave ID (unique per bus), function code,
+  temperature and humidity register and scale. XY-MD02: function code 4, registers 1 and 2,
+  scale 0.1. Each sensor gets a fixed ID (`#1`, `#2`, ...) that stays the same when renamed.
+- **Live status** shows the last values or the last error per sensor.
+
+Buses are read in parallel; sensors on one bus one after another. A sensor that does not answer
+or an unplugged interface does not affect the others and is retried automatically. Changes are
+applied without restarting the app. Deleting a sensor keeps its measurements in the database.
+
+On the dashboard choose **All sensors (combined)** for one graph per quantity with a line per
+sensor, a status card per sensor and all sensors in the Mollier diagram, or select one sensor for
+its detailed view and historical replay.
+
+#### Modbus values in `.env` (first start only)
+
+When upgrading, the existing `.env` Modbus configuration becomes *Bus 1* with *Sensor 1*, and all
+existing measurements belong to *Sensor 1*.
 
 - `MODBUS_PORT`: Serial port (e.g. COM11, /dev/ttyUSB0)
 - `MODBUS_SLAVE_ID`: Slave ID of the device
@@ -398,7 +424,8 @@ app.py
 ### Troubleshooting
 
 #### Modbus connection problems
-- Check if the serial port is correct (`MODBUS_PORT` in `.env`)
+- Check the live status per sensor in Settings → Modbus buses and sensors
+- Check if the serial port is correct and listed under the bus table
 - Verify the baudrate and other serial settings
 - Check the register numbers in the device documentation
 
