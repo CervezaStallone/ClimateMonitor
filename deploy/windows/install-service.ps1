@@ -47,9 +47,12 @@ $TrustedSids = @(
 # Only real write rights (Modify/FullControl also contain read bits, so do not test against those)
 $WriteBits = [int64](2 -bor 4 -bor 16 -bor 64 -bor 256 -bor 65536 -bor 262144 -bor 524288)   # write/append/delete/ACL/owner
 $GenericWriteBits = [int64](0x40000000 -bor 0x10000000)                                         # GENERIC_WRITE, GENERIC_ALL
-foreach ($Path in @($AppDir, (Join-Path $AppDir 'app.py'), (Join-Path $AppDir 'deploy\windows\run-app.cmd'))) {
-    if (-not (Test-Path $Path)) { continue }
-    $Unsafe = (Get-Acl $Path).Access | Where-Object {
+function Test-OnlyAdminsCanChange($Path) {
+    # Returns a description of who else can change $Path, or $null
+    $Acl = Get-Acl -LiteralPath $Path
+    $OwnerSid = try { (New-Object Security.Principal.NTAccount($Acl.Owner)).Translate([Security.Principal.SecurityIdentifier]).Value } catch { $Acl.Owner }
+    if ($TrustedSids -notcontains $OwnerSid) { return "owner $($Acl.Owner)" }   # an owner can always change the permissions
+    $Unsafe = $Acl.Access | Where-Object {
         $Ace = $_
         $Rights = [int64]$Ace.FileSystemRights
         $Sid = try { $Ace.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch { $Ace.IdentityReference.Value }
@@ -58,9 +61,19 @@ foreach ($Path in @($AppDir, (Join-Path $AppDir 'app.py'), (Join-Path $AppDir 'd
         (($Rights -band $WriteBits) -or ($Rights -band $GenericWriteBits)) -and
         $TrustedSids -notcontains $Sid
     }
-    if ($Unsafe) {
-        $Who = ($Unsafe | ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique) -join ', '
-        Write-Error ("Not only administrators can change '$Path' ($Who). Move the app to a folder that only " +
+    if ($Unsafe) { return (($Unsafe | ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique) -join ', ') }
+    return $null
+}
+
+# Check the folder and everything the service runs (all files incl. .venv); src and logs only hold data
+Write-Host '-> Checking that only administrators can change the app files (this can take a minute)'
+$DataDirs = @((Join-Path $AppDir 'src'), (Join-Path $AppDir 'logs'), (Join-Path $AppDir '.git'))
+$Items = @(Get-Item -LiteralPath $AppDir) + @(Get-ChildItem -LiteralPath $AppDir -Recurse -Force -ErrorAction SilentlyContinue |
+    Where-Object { $Item = $_.FullName; -not ($DataDirs | Where-Object { $Item -eq $_ -or $Item.StartsWith("$_\") }) })
+foreach ($Item in $Items) {
+    $Who = Test-OnlyAdminsCanChange $Item.FullName
+    if ($Who) {
+        Write-Error ("Not only administrators can change '$($Item.FullName)' ($Who). Move the app to a folder that only " +
                      "administrators can change, for example C:\Program Files\XY-MD02_WebApp, and run this script again.")
         exit 1
     }
