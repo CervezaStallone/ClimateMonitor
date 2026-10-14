@@ -209,17 +209,21 @@ def test_reset_password_revokes_sessions():
     assert client.get('/').status_code == 302
 
 
-def test_global_cap_does_not_lock_out_admin():
+def test_global_cap_blocks_new_clients_but_not_trusted_browser():
     fresh_settings()
     auth.set_password('geheim123', 'geheim123')
-    client = make_client()
+    admin = make_client()
+    admin.post('/login', data={'password': 'geheim123'})   # eerder ingelogd: vertrouwde browser
+    admin.get('/logout')
     now = time.time()
     for i in range(auth.MAX_FAILURES_GLOBAL):              # aanval vanaf veel adressen
         auth._failures[f'10.0.{i // 250}.{i % 250}'] = [now]
-    assert auth._blocked_for('10.0.0.1') > 0               # aanvaller: nog maar 1 poging
-    assert auth._blocked_for('192.0.2.50') == 0            # beheerder zonder mislukte pogingen
-    r = client.post('/login', data={'password': 'geheim123'})
-    assert r.status_code == 302
+    attacker = admin.application.test_client()
+    assert attacker.post('/login', data={'password': 'geheim123'}).status_code == 429   # nieuwe browser: geblokkeerd
+    assert admin.post('/login', data={'password': 'geheim123'}).status_code == 302     # vertrouwde browser: ok
+    forged = admin.application.test_client()
+    forged.set_cookie(auth.TRUSTED_COOKIE, 'vervalst')
+    assert forged.post('/login', data={'password': 'geheim123'}).status_code == 429
 
 
 def test_login_racing_password_change_is_not_upgraded():
