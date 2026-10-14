@@ -502,6 +502,20 @@ def test_notification_settings_secrets_and_required_fields():
     assert settings.merged({'telegram_bot_token': '', 'telegram_chat_id': '42'})['telegram_bot_token'] == TOKEN
 
 
+def test_stored_smtp_password_never_goes_to_another_server():
+    fresh_settings()
+    assert settings.save({'smtp_host': 'mail.example.com', 'smtp_username': 'user', 'smtp_password': 'Geheim!pw'}) == {}
+    # Testknop met gewijzigde server en leeg wachtwoord: opgeslagen wachtwoord wordt niet gebruikt
+    assert settings.merged({'smtp_host': 'evil.example', 'smtp_password': ''})['smtp_password'] == ''
+    assert settings.merged({'smtp_username': 'ander', 'smtp_password': ''})['smtp_password'] == ''
+    assert settings.merged({'smtp_host': 'mail.example.com', 'smtp_password': ''})['smtp_password'] == 'Geheim!pw'
+    # Opslaan met gewijzigde server zonder wachtwoord opnieuw in te vullen: geweigerd
+    assert settings.save({'smtp_host': 'evil.example', 'smtp_password': ''}) == {'smtp_password': 'err_secret_reenter'}
+    assert settings.get('smtp_host') == 'mail.example.com'
+    assert settings.save({'smtp_host': 'smtp.example.org', 'smtp_password': 'Nieuw!pw'}) == {}
+    assert settings.save({'smtp_port': '587', 'smtp_password': ''}) == {}      # niets aan bestemming gewijzigd
+
+
 def test_rule_validation_and_override():
     names = setup_alerts([{'scope': 0, 'metric': 'humidity', 'max_value': 70, 'enabled': 'true'}])
     kas = names['Kas']['id']
