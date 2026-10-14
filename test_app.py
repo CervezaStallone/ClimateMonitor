@@ -24,6 +24,7 @@ import minimalmodbus  # noqa: E402
 import serial  # noqa: E402
 from flask import Flask  # noqa: E402
 
+import alerts  # noqa: E402
 import auth  # noqa: E402
 import database  # noqa: E402
 import devices  # noqa: E402
@@ -41,6 +42,12 @@ def fresh_settings():
     settings._cache.clear()
     settings.load()
     devices._status.clear()
+    alerts._rules_cache = None
+    alerts._state.clear()
+    alerts._offline.clear()
+    alerts._first_seen.clear()
+    while not alerts._outbox.empty():
+        alerts._outbox.get_nowait()
 
 
 def make_client():
@@ -449,13 +456,171 @@ def test_settings_callbacks_require_login():
         assert callbacks['add_device'](1, [], rows) is dash.no_update
         assert callbacks['update_bus_choices'](rows, {}) is dash.no_update
         assert callbacks['refresh_device_status'](3, 'settings', 'nl') is dash.no_update
-        assert all(v is dash.no_update for v in callbacks['show_modbus_errors'](1, rows, [], 'nl'))
-        errors, status, _ = callbacks['save_settings'](1, [], 'nl', rows, [])
+        assert all(v is dash.no_update for v in callbacks['show_modbus_errors'](1, rows, [], 'nl', []))
+        errors, status, _ = callbacks['save_settings'](1, [], 'nl', rows, [], [])
         assert errors is dash.no_update and status == TRANSLATIONS_NL['settings_locked']
         assert callbacks['change_password'](1, 'x', 'y', 'y', 'nl')[0] == TRANSLATIONS_NL['settings_locked']
         assert 'admin' not in str(callbacks['show_settings']('settings', 'nl'))   # alleen het inlogscherm
+        assert callbacks['add_rule'](1, []) is dash.no_update
+        assert callbacks['send_test'](1, 0, [], 'nl') == TRANSLATIONS_NL['settings_locked']
+        assert callbacks['refresh_alert_log'](5, 'settings', 'nl') is dash.no_update
     assert set(callbacks) >= {'add_bus', 'add_device', 'update_bus_choices', 'refresh_device_status',
-                              'show_modbus_errors', 'save_settings', 'change_password', 'show_settings'}
+                              'show_modbus_errors', 'save_settings', 'change_password', 'show_settings',
+                              'add_rule', 'send_test', 'refresh_alert_log'}
+
+
+# --- meldingen -----------------------------------------------------------------
+
+TOKEN = '123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw1'
+
+
+def outbox_texts():
+    texts = []
+    while not alerts._outbox.empty():
+        texts.append(alerts._outbox.get_nowait()['text'])
+    return texts
+
+
+def setup_alerts(rules):
+    fresh_settings()
+    devices.save_config([bus()], [device('Koelcel'), device('Kas', slave_id=2)])
+    assert settings.save({'telegram_enabled': True, 'telegram_bot_token': TOKEN, 'telegram_chat_id': '-1001234',
+                          'alert_delay_seconds': 60, 'default_language': 'nl'}) == {}
+    assert alerts.save_rules(rules) == {}
+    return {d['name']: d for d in devices.load_config()[1]}
+
+
+def test_notification_settings_secrets_and_required_fields():
+    fresh_settings()
+    assert settings.save({'telegram_enabled': True}) == {'telegram_bot_token': 'err_required', 'telegram_chat_id': 'err_required'}
+    assert settings.save({'telegram_bot_token': 'geen-token'}) == {'telegram_bot_token': 'err_telegram_token'}
+    assert settings.save({'smtp_to': 'a@b.nl, fout'}) == {'smtp_to': 'err_email'}
+    assert settings.save({'telegram_enabled': True, 'telegram_bot_token': TOKEN, 'telegram_chat_id': '@mijnkanaal'}) == {}
+    assert settings.public_values()['telegram_bot_token'] is True          # alleen "ingesteld", nooit de waarde
+    assert settings.save({'telegram_bot_token': ''}) == {}                  # leeg = houden
+    assert settings.get('telegram_bot_token') == TOKEN
+    assert settings.merged({'telegram_bot_token': '', 'telegram_chat_id': '42'})['telegram_bot_token'] == TOKEN
+
+
+def test_rule_validation_and_override():
+    names = setup_alerts([{'scope': 0, 'metric': 'humidity', 'max_value': 70, 'enabled': 'true'}])
+    kas = names['Kas']['id']
+    assert alerts.validate_rules([{'scope': 0, 'metric': 'humidity'}])[1] == {0: {'min_value': 'err_rule_empty'}}
+    assert alerts.validate_rules([{'scope': 0, 'metric': 'humidity', 'min_value': 9, 'max_value': 5}])[1] \
+        == {0: {'max_value': 'err_min_max'}}
+    assert alerts.validate_rules([{'scope': 99, 'metric': 'humidity', 'max_value': 5}])[1] == {0: {'scope': 'err_choice'}}
+    assert alerts.validate_rules([{'scope': 0, 'metric': 'humidity', 'max_value': 5}] * 2)[1] == {1: {'metric': 'err_duplicate'}}
+    assert alerts.save_rules([{'scope': 0, 'metric': 'humidity', 'max_value': 70, 'enabled': 'true'},
+                              {'scope': kas, 'metric': 'humidity', 'max_value': 90, 'enabled': 'true'}]) == {}
+    assert alerts.effective_rules(kas)['humidity']['max_value'] == 90
+    assert alerts.effective_rules(names['Koelcel']['id'])['humidity']['max_value'] == 70
+
+
+def test_alarm_delay_single_alert_and_recovery():
+    names = setup_alerts([{'scope': 0, 'metric': 'temperature', 'max_value': 8, 'enabled': 'true'}])
+    cel = names['Koelcel']
+    alerts.evaluate(cel, {'temperature': 9.0}, now=1000)
+    alerts.evaluate(cel, {'temperature': 7.0}, now=1030)     # kort boven grens: geen melding
+    alerts.evaluate(cel, {'temperature': 9.0}, now=1040)
+    alerts.evaluate(cel, {'temperature': 9.5}, now=1080)     # nog geen 60 s
+    assert outbox_texts() == []
+    alerts.evaluate(cel, {'temperature': 9.6}, now=1100)     # 60 s aanhoudend: alarm
+    alerts.evaluate(cel, {'temperature': 10.0}, now=1200)    # geen herhaling
+    alerts.evaluate(cel, {'temperature': 7.8}, now=1300)     # binnen grens maar niet voorbij hysterese (0.5)
+    texts = outbox_texts()
+    assert len(texts) == 1 and 'Koelcel' in texts[0] and '9.6' in texts[0] and 'maximum van 8.0' in texts[0]
+    alerts.evaluate(cel, {'temperature': 7.4}, now=1400)     # hersteld
+    texts = outbox_texts()
+    assert len(texts) == 1 and 'weer normaal' in texts[0]
+
+
+def test_recovery_message_can_be_disabled_and_low_limit():
+    names = setup_alerts([{'scope': 0, 'metric': 'humidity', 'min_value': 30, 'enabled': 'true'}])
+    settings.save({'alert_notify_recovery': [], 'alert_delay_seconds': 0})
+    kas = names['Kas']
+    alerts.evaluate(kas, {'humidity': 25.0}, now=1)
+    assert 'minimum van 30.0' in outbox_texts()[0]
+    alerts.evaluate(kas, {'humidity': 40.0}, now=2)
+    assert outbox_texts() == []
+
+
+def test_offline_and_online_messages():
+    names = setup_alerts([])
+    settings.save({'alert_offline_minutes': 5})
+    cel = names['Koelcel']
+    devices.report_ok(cel['id'], 5.0, 80.0)
+    devices.report_ok(names['Kas']['id'], 20.0, 60.0)
+    devices._status[cel['id']]['ok_at'] = time.time() - 6 * 60
+    alerts.check_offline()
+    alerts.check_offline()                                   # niet dubbel
+    texts = outbox_texts()
+    assert len(texts) == 1 and 'Koelcel' in texts[0] and 'geen meetwaarden' in texts[0]
+    alerts.evaluate(cel, {'temperature': 5.0})
+    assert 'weer online' in outbox_texts()[0]
+
+
+def test_new_sensor_without_readings_gets_full_offline_period():
+    names = setup_alerts([])
+    settings.save({'alert_offline_minutes': 5})
+    alerts._first_seen.clear()
+    alerts.check_offline(now=10_000)                         # net toegevoegd, nog geen meting
+    alerts.check_offline(now=10_000 + 4 * 60)
+    assert outbox_texts() == []
+    alerts.check_offline(now=10_000 + 5 * 60)
+    assert sorted(t.split(':')[0][2:] for t in outbox_texts()) == sorted(names)
+
+
+def test_send_channels_hide_secrets():
+    fresh_settings()
+    config = settings.merged({'telegram_bot_token': TOKEN, 'telegram_chat_id': '42', 'smtp_host': 'mail.example.com',
+                              'smtp_from': 'a@example.com', 'smtp_to': 'b@example.com, c@example.com',
+                              'smtp_username': 'user', 'smtp_password': 'Geheim!pw'})
+    original_post, original_smtp = alerts.requests.post, alerts.smtplib.SMTP
+    sent = {}
+
+    def failing_post(url, **kwargs):
+        raise alerts.requests.ConnectionError(f'Max retries exceeded with url: {url}')
+
+    class FakeSMTP:
+        def __init__(self, host, port, timeout):
+            sent['server'] = (host, port)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def starttls(self, context):
+            sent['tls'] = True
+
+        def login(self, user, password):
+            raise alerts.smtplib.SMTPAuthenticationError(535, f'bad credentials for {user}/{password}')
+
+    try:
+        alerts.requests.post, alerts.smtplib.SMTP = failing_post, FakeSMTP
+        error = alerts.send_now('telegram', 'x', config)
+        assert TOKEN not in error and '***' in error
+        error = alerts.send_now('email', 'x', config)
+        assert 'Geheim!pw' not in error and sent == {'server': ('mail.example.com', 587), 'tls': True}
+    finally:
+        alerts.requests.post, alerts.smtplib.SMTP = original_post, original_smtp
+
+
+def test_notifier_retries_failed_messages():
+    setup_alerts([])
+    notifier = alerts.Notifier()
+    original = alerts.CHANNELS['telegram']
+    try:
+        alerts.CHANNELS['telegram'] = lambda text, config: (_ for _ in ()).throw(RuntimeError('Bad Gateway'))
+        notifier.deliver({'channel': 'telegram', 'text': 'hallo', 'attempt': 0, 'next_try': 0})
+        assert alerts.log[0]['ok'] is False and alerts.log[0]['error'] == 'Bad Gateway'
+        assert len(notifier.waiting) == 1 and notifier.waiting[0]['next_try'] > time.time()
+        alerts.CHANNELS['telegram'] = lambda text, config: None
+        notifier.deliver(notifier.waiting.pop())
+        assert alerts.log[0]['ok'] is True and alerts.log[0]['attempt'] == 2
+    finally:
+        alerts.CHANNELS['telegram'] = original
 
 
 if __name__ == '__main__':

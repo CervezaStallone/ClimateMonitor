@@ -5,12 +5,13 @@ from zoneinfo import available_timezones
 
 from dash import ALL, Input, Output, State, callback_context, dash_table, dcc, html, no_update
 
+import alerts
 import auth
 import devices
 import settings
 from translations import LANGUAGE_NAMES, TRANSLATIONS
 
-SECTIONS = ['modbus', 'regional', 'data', 'server', 'security']
+SECTIONS = ['modbus', 'notify', 'alerts', 'regional', 'data', 'server', 'security']
 
 BUS_COLUMNS = ['name', 'port', 'baudrate', 'bytesize', 'parity', 'stopbits', 'timeout', 'enabled']
 DEVICE_COLUMNS = ['id', 'name', 'bus', 'slave_id', 'function_code', 'register_temp', 'register_humidity',
@@ -42,14 +43,18 @@ def _options(key, t):
 def _field(key, value, t):
     spec = settings.SCHEMA[key]
     field_id = {'type': 'setting', 'key': key}
-    if spec['type'] is bool:
+    if spec.get('secret'):
+        # Write-only: nooit de waarde tonen, alleen of hij ingesteld is; leeg laten = houden
+        control = dcc.Input(id=field_id, type='password', value='', autoComplete='new-password',
+                            placeholder=t['secret_set'] if value else t['secret_not_set'], style=INPUT_STYLE)
+    elif spec['type'] is bool:
         control = dcc.Checklist(id=field_id, options=[{'label': ' ' + t['lbl_enabled'], 'value': 'on'}],
                                 value=['on'] if value else [])
     elif 'choices' in spec or spec.get('check') == 'timezone':
         control = dcc.Dropdown(id=field_id, options=_options(key, t), value=value, clearable=False)
-    elif spec['type'] is int:
+    elif spec['type'] in (int, float):
         control = dcc.Input(id=field_id, type='number', value=value, min=spec.get('min'), max=spec.get('max'),
-                            step=1, style=INPUT_STYLE)
+                            step=1 if spec['type'] is int else 'any', style=INPUT_STYLE)
     else:
         control = dcc.Input(id=field_id, type='text', value=value, style=INPUT_STYLE)
 
@@ -135,6 +140,59 @@ def _modbus_section(t):
     ]
 
 
+def _notify_section(t):
+    test_style = {**BUTTON_STYLE, 'padding': '6px 14px', 'fontSize': '14px', 'background': '#3498db', 'marginRight': '10px'}
+    return [
+        html.Div(t['hint_telegram'], style={'fontSize': '12px', 'color': '#7f8c8d', 'marginBottom': '10px'}),
+        html.Button(t['btn_test_telegram'], id='test-telegram', n_clicks=0, style=test_style),
+        html.Button(t['btn_test_email'], id='test-email', n_clicks=0, style=test_style),
+        html.Div(id='test-status', style={'marginTop': '10px', 'fontWeight': 'bold'}),
+    ]
+
+
+def _rule_rows():
+    return [{'scope': r['device_id'] or 0, 'metric': r['metric'], 'min_value': r['min_value'],
+             'max_value': r['max_value'], 'enabled': 'true' if r['enabled'] else 'false'} for r in alerts.load_rules()]
+
+
+def _alerts_section(t):
+    scopes = [{'label': t['opt_all_devices'], 'value': 0}] + [
+        {'label': f"#{d['id']} {d['name']}", 'value': d['id']} for d in devices.list_devices()]
+    metrics = [{'label': t[alerts.METRICS[m][0]], 'value': m} for m in alerts.METRICS]
+    add_style = {**BUTTON_STYLE, 'padding': '6px 14px', 'fontSize': '14px', 'background': '#3498db'}
+    return [
+        html.H4(t['table_rules'], style={'color': '#2c3e50', 'marginBottom': '6px'}),
+        html.Div(t['hint_rules'], style={'fontSize': '12px', 'color': '#7f8c8d', 'marginBottom': '8px'}),
+        dash_table.DataTable(
+            id='alert-rule-table',
+            columns=[{'id': 'scope', 'name': t['col_scope'], 'presentation': 'dropdown'},
+                     {'id': 'metric', 'name': t['col_metric'], 'presentation': 'dropdown'},
+                     {'id': 'min_value', 'name': t['col_min_value'], 'type': 'numeric'},
+                     {'id': 'max_value', 'name': t['col_max_value'], 'type': 'numeric'},
+                     {'id': 'enabled', 'name': t['col_enabled'], 'presentation': 'dropdown'}],
+            data=_rule_rows(), editable=True, row_deletable=True,
+            dropdown={'scope': {'options': scopes, 'clearable': False},
+                      'metric': {'options': metrics, 'clearable': False},
+                      'enabled': {'options': _yes_no(t), 'clearable': False}},
+            **TABLE_STYLE),
+        html.Button(t['btn_add_rule'], id='add-rule', n_clicks=0, style=add_style),
+        html.H4(t['lbl_alert_log'], style={'color': '#2c3e50', 'margin': '20px 0 6px'}),
+        html.Div(id='alert-log', children=alert_log_list(t)),
+    ]
+
+
+def alert_log_list(t):
+    if not alerts.log:
+        return html.Div(t['alert_log_empty'], style={'color': '#7f8c8d'})
+    channel_names = {'telegram': 'Telegram', 'email': 'E-mail'}
+    return html.Ul([html.Li([
+        html.Span(time.strftime('%d-%m %H:%M:%S', time.localtime(entry['time'])) + ' · ' + channel_names[entry['channel']] + ': '),
+        html.Span(entry['text']),
+        html.Span(' ✓' if entry['ok'] else f" ✗ {entry['error']}", style={'color': '#27ae60' if entry['ok'] else '#c0392b',
+                                                                          'fontWeight': 'bold'}),
+    ]) for entry in list(alerts.log)], style={'paddingLeft': '20px', 'margin': '0', 'fontSize': '13px'})
+
+
 def device_status_list(t):
     """Live status per device: laatste waarden of laatste fout."""
     items = []
@@ -157,7 +215,7 @@ def device_status_list(t):
 
 def _section(name, values, t):
     keys = [k for k, spec in settings.SCHEMA.items() if spec['section'] == name]
-    extra = _modbus_section(t) if name == 'modbus' else []
+    extra = {'modbus': _modbus_section, 'notify': _notify_section, 'alerts': _alerts_section}.get(name, lambda t: [])(t)
     if name == 'data':
         extra.append(html.Div([
             html.Label(t['lbl_database_file'], style=LABEL_STYLE),
@@ -245,10 +303,11 @@ def register_settings_callbacks(app):
         [State({'type': 'setting', 'key': ALL}, 'value'),
          State('selected-language', 'data'),
          State('bus-table', 'data'),
-         State('device-table', 'data')],
+         State('device-table', 'data'),
+         State('alert-rule-table', 'data')],
         prevent_initial_call=True
     )
-    def save_settings(n_clicks, values, lang, bus_rows, device_rows):
+    def save_settings(n_clicks, values, lang, bus_rows, device_rows, rule_rows):
         t = _t(lang)
         ok_style = {'marginTop': '10px', 'fontWeight': 'bold', 'color': '#27ae60'}
         bad_style = {'marginTop': '10px', 'fontWeight': 'bold', 'color': '#c0392b'}
@@ -258,7 +317,8 @@ def register_settings_callbacks(app):
 
         # Eerst de Modbus configuratie valideren, zodat bij een fout niets wordt opgeslagen
         _, _, modbus_errors = devices.validate_config(bus_rows or [], device_rows or [])
-        if modbus_errors:
+        _, rule_errors = alerts.validate_rules(rule_rows or [])
+        if modbus_errors or rule_errors:
             return [''] * len(keys), t['msg_save_failed'], bad_style
 
         submitted = dict(zip(keys, values))
@@ -268,6 +328,7 @@ def register_settings_callbacks(app):
         if errors:
             return field_errors, t['msg_save_failed'], bad_style
         devices.save_config(bus_rows or [], device_rows or [])
+        alerts.save_rules(rule_rows or [])
 
         restart_changed = any(settings.SCHEMA[k].get('restart') and settings.get(k) != before[k] for k in keys)
         message = t['msg_saved_restart'] if restart_changed else t['msg_saved']
@@ -278,21 +339,27 @@ def register_settings_callbacks(app):
          Output('bus-table', 'style_data_conditional'),
          Output('device-table', 'style_data_conditional'),
          Output('bus-table', 'data', allow_duplicate=True),
-         Output('device-table', 'data', allow_duplicate=True)],
+         Output('device-table', 'data', allow_duplicate=True),
+         Output('alert-rule-table', 'style_data_conditional'),
+         Output('alert-rule-table', 'data', allow_duplicate=True)],
         Input('settings-save', 'n_clicks'),
         [State('bus-table', 'data'),
          State('device-table', 'data'),
-         State('selected-language', 'data')],
+         State('selected-language', 'data'),
+         State('alert-rule-table', 'data')],
         prevent_initial_call=True
     )
-    def show_modbus_errors(n_clicks, bus_rows, device_rows, lang):
+    def show_modbus_errors(n_clicks, bus_rows, device_rows, lang, rule_rows):
         """Markeer foute cellen; na succesvol opslaan de tabellen herladen (nieuwe rijen krijgen een id)."""
         t = _t(lang)
         if not auth.is_logged_in():
-            return no_update, no_update, no_update, no_update, no_update
+            return (no_update,) * 7
         _, _, errors = devices.validate_config(bus_rows or [], device_rows or [])
-        messages, styles = [], {'buses': [], 'devices': []}
-        for table in ('buses', 'devices'):
+        _, rule_errors = alerts.validate_rules(rule_rows or [])
+        if rule_errors:
+            errors = {**errors, 'rules': rule_errors}
+        messages, styles = [], {'buses': [], 'devices': [], 'rules': []}
+        for table in ('buses', 'devices', 'rules'):
             for row, fields in errors.get(table, {}).items():
                 for field, code in fields.items():
                     messages.append(html.Li(t['row_error'].format(table=t[f'table_{table}'], row=row + 1,
@@ -300,9 +367,9 @@ def register_settings_callbacks(app):
                     styles[table].append({'if': {'row_index': row, 'column_id': field},
                                           'backgroundColor': '#fadbd8', 'color': '#c0392b'})
         if errors:
-            return html.Ul(messages), styles['buses'], styles['devices'], no_update, no_update
+            return html.Ul(messages), styles['buses'], styles['devices'], no_update, no_update, styles['rules'], no_update
         buses, device_rows = devices.load_config()
-        return '', [], [], _table_rows(buses, BUS_COLUMNS), _table_rows(device_rows, DEVICE_COLUMNS)
+        return '', [], [], _table_rows(buses, BUS_COLUMNS), _table_rows(device_rows, DEVICE_COLUMNS), [], _rule_rows()
 
     @app.callback(
         Output('bus-table', 'data'),
@@ -361,6 +428,55 @@ def register_settings_callbacks(app):
         if tab != 'settings' or n % 3 or not auth.is_logged_in():
             return no_update
         return device_status_list(_t(lang))
+
+    @app.callback(
+        Output('alert-rule-table', 'data'),
+        Input('add-rule', 'n_clicks'),
+        State('alert-rule-table', 'data'),
+        prevent_initial_call=True
+    )
+    def add_rule(n_clicks, rows):
+        if not auth.is_logged_in():
+            return no_update
+        return (rows or []) + [{'scope': 0, 'metric': 'temperature', 'min_value': None, 'max_value': None,
+                                'enabled': 'true'}]
+
+    @app.callback(
+        Output('test-status', 'children'),
+        [Input('test-telegram', 'n_clicks'),
+         Input('test-email', 'n_clicks')],
+        [State({'type': 'setting', 'key': ALL}, 'value'),
+         State('selected-language', 'data')],
+        prevent_initial_call=True
+    )
+    def send_test(telegram_clicks, email_clicks, values, lang):
+        """Testbericht met de waarden in het formulier (ook nog niet opgeslagen)."""
+        t = _t(lang)
+        if not auth.is_logged_in():
+            return t['settings_locked']
+        keys = [item['id']['key'] for item in callback_context.states_list[0]]
+        config = settings.merged(dict(zip(keys, values)))
+        channel = 'telegram' if callback_context.triggered_id == 'test-telegram' else 'email'
+        required = settings.REQUIRED_WHEN['telegram_enabled' if channel == 'telegram' else 'smtp_enabled']
+        missing = [t[f'lbl_{k}'] for k in required if not config.get(k)]
+        if missing:
+            return html.Span(t['test_missing'].format(fields=', '.join(missing)), style={'color': '#c0392b'})
+        error = alerts.send_now(channel, t['test_message'].format(time=time.strftime('%d-%m-%Y %H:%M')), config)
+        if error:
+            return html.Span(t['test_failed'].format(error=error), style={'color': '#c0392b'})
+        return html.Span(t['test_ok'], style={'color': '#27ae60'})
+
+    @app.callback(
+        Output('alert-log', 'children'),
+        Input('graph-update', 'n_intervals'),
+        [State('main-tabs', 'value'),
+         State('selected-language', 'data')],
+        prevent_initial_call=True
+    )
+    def refresh_alert_log(n, tab, lang):
+        if tab != 'settings' or n % 5 or not auth.is_logged_in():
+            return no_update
+        return alert_log_list(_t(lang))
 
     @app.callback(
         [Output('pw-status', 'children'),
