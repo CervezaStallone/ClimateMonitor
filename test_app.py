@@ -508,6 +508,8 @@ def test_stored_smtp_password_never_goes_to_another_server():
     # Testknop met gewijzigde server en leeg wachtwoord: opgeslagen wachtwoord wordt niet gebruikt
     assert settings.merged({'smtp_host': 'evil.example', 'smtp_password': ''})['smtp_password'] == ''
     assert settings.merged({'smtp_username': 'ander', 'smtp_password': ''})['smtp_password'] == ''
+    assert settings.merged({'smtp_security': 'none', 'smtp_password': ''})['smtp_password'] == ''   # geen downgrade
+    assert settings.save({'smtp_security': 'none', 'smtp_password': ''}) == {'smtp_password': 'err_secret_reenter'}
     assert settings.merged({'smtp_host': 'mail.example.com', 'smtp_password': ''})['smtp_password'] == 'Geheim!pw'
     # Opslaan met gewijzigde server zonder wachtwoord opnieuw in te vullen: geweigerd
     assert settings.save({'smtp_host': 'evil.example', 'smtp_password': ''}) == {'smtp_password': 'err_secret_reenter'}

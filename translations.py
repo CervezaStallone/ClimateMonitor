@@ -214,7 +214,7 @@ TRANSLATIONS = {
         'alert_recovered': '✅ {device}: {metric} is weer normaal: {value} {unit} (grens {limit} {unit}, {time})',
         'alert_offline': '📴 {device}: geen meetwaarden meer sinds {time}',
         'alert_online': '📶 {device}: weer online ({time})',
-        'err_secret_reenter': 'Server of gebruiker gewijzigd: vul het wachtwoord opnieuw in'
+        'err_secret_reenter': 'Server, gebruiker of beveiliging gewijzigd: vul het wachtwoord opnieuw in'
     },
     'en': {
         'title': '🌡️ Modbus Climate Monitor',
@@ -423,7 +423,7 @@ TRANSLATIONS = {
         'alert_recovered': '✅ {device}: {metric} is back to normal: {value} {unit} (limit {limit} {unit}, {time})',
         'alert_offline': '📴 {device}: no readings since {time}',
         'alert_online': '📶 {device}: back online ({time})',
-        'err_secret_reenter': 'Server or user changed: enter the password again'
+        'err_secret_reenter': 'Server, user or security changed: enter the password again'
     },
     'de': {
         'title': '🌡️ Modbus Klimamonitor',
@@ -632,7 +632,7 @@ TRANSLATIONS = {
         'alert_recovered': '✅ {device}: {metric} ist wieder normal: {value} {unit} (Grenze {limit} {unit}, {time})',
         'alert_offline': '📴 {device}: keine Messwerte seit {time}',
         'alert_online': '📶 {device}: wieder online ({time})',
-        'err_secret_reenter': 'Server oder Benutzer geändert: Passwort erneut eingeben'
+        'err_secret_reenter': 'Server, Benutzer oder Sicherheit geändert: Passwort erneut eingeben'
     },
     'fr': {
         'title': '🌡️ Moniteur Climatique Modbus',
@@ -841,7 +841,7 @@ TRANSLATIONS = {
         'alert_recovered': '✅ {device} : {metric} est redevenu normal : {value} {unit} (seuil {limit} {unit}, {time})',
         'alert_offline': '📴 {device} : aucune mesure depuis {time}',
         'alert_online': '📶 {device} : de nouveau en ligne ({time})',
-        'err_secret_reenter': 'Serveur ou utilisateur modifié : saisissez à nouveau le mot de passe'
+        'err_secret_reenter': 'Serveur, utilisateur ou sécurité modifié : saisissez à nouveau le mot de passe'
     },
     'es': {
         'title': '🌡️ Monitor Climático Modbus',
@@ -1050,6 +1050,6 @@ TRANSLATIONS = {
         'alert_recovered': '✅ {device}: {metric} ha vuelto a la normalidad: {value} {unit} (límite {limit} {unit}, {time})',
         'alert_offline': '📴 {device}: sin mediciones desde {time}',
         'alert_online': '📶 {device}: de nuevo en línea ({time})',
-        'err_secret_reenter': 'Servidor o usuario cambiado: introduzca de nuevo la contraseña'
+        'err_secret_reenter': 'Servidor, usuario o seguridad cambiados: introduzca de nuevo la contraseña'
     }
 }
