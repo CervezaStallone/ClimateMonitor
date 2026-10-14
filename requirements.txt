@@ -17,6 +17,7 @@ minimalmodbus==2.1.1
 nest-asyncio==1.6.0
 numpy==2.2.6
 packaging==25.0
+paho-mqtt==2.1.0
 pandas==2.3.3
 plotly==7.1.0
 pyserial==3.5
