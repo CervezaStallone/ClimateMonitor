@@ -22,7 +22,8 @@ A professional real-time climate monitoring dashboard application for the XY-MD0
 - **Professional UI**: Modern dashboard with gradient header and card-based layout
 - **Zoom persistence**: Graph zoom stays preserved during live updates
 - **Robust**: Extensive input validation and error handling
-- **Configurable**: All settings via `.env` file
+- **Configurable in the browser**: Settings tab for timezone, language, data retention, server and security
+- **Login protection**: Admin password for the Settings tab, optionally for the whole app
 
 ### Screenshots
 
@@ -86,7 +87,7 @@ Copy the example configuration file:
 cp .env.example .env
 ```
 
-Adjust the settings in `.env`:
+Adjust the Modbus settings in `.env` (all other settings are configured in the browser, see [Settings Tab](#settings-tab)):
 ```env
 # Modbus Settings
 MODBUS_PORT=COM11
@@ -104,10 +105,7 @@ MODBUS_REGISTER_HUMIDITY=2
 DATABASE_FILE=src/modbus_sensor_data.db
 DATA_RETENTION_DAYS=0
 
-# Application Settings
-APP_HOST=127.0.0.1
-APP_PORT=8050
-APP_DEBUG=False
+# Initial values only, change them later in the Settings tab
 DEBUG_LOGGING=False
 TIMEZONE=Europe/Amsterdam
 DEFAULT_LANGUAGE=EN
@@ -129,6 +127,9 @@ XY-MD02_WebApp/
 ├── modbus_reader.py            # Modbus RTU communication, batch buffering
 ├── psychrometric.py            # Mollier diagram generation
 ├── callbacks.py                # Dash callbacks (7 functions)
+├── settings.py                 # Settings stored in the database, validation, password reset
+├── settings_ui.py              # Settings tab
+├── auth.py                     # Admin password, login sessions, protection
 ├── layout.py                   # HTML layout and CSS styling
 ├── translations.py             # Multilingual system (NL/EN)
 ├── test_app.py                 # Automated test suite (15 tests)
@@ -142,6 +143,35 @@ XY-MD02_WebApp/
 ```
 
 ### Configuration
+
+#### Settings Tab
+
+Open the **Settings** tab in the web app. The first visit asks you to create an admin password
+(at least 8 characters). After that you can change, without editing files or restarting:
+
+| Section | Settings |
+|---------|----------|
+| Region and language | Timezone, default language |
+| Data | Data retention (days, 0 = forever), debug logging |
+| Server | Listen address and port (*restart required*) |
+| Security | Protection level, automatic log-out time, admin password |
+
+**Protection level**
+- *Protect settings only* (default): the dashboard is public, the Settings tab needs the password.
+- *Protect the whole app*: every page, including the dashboard and its data, needs the password.
+
+Settings are stored in the database. On the first start of this version, values from `.env`
+(`DATA_RETENTION_DAYS`, `DEBUG_LOGGING`, `TIMEZONE`, `DEFAULT_LANGUAGE`) are taken over
+automatically; after that the Settings tab is leading. If the configured address/port cannot be
+used at startup, the app falls back to `0.0.0.0:8050` so the device stays reachable.
+
+**Forgot the admin password?** Run on the device:
+```bash
+python settings.py reset-password
+```
+Then open the Settings tab and set a new password straight away.
+
+> The app uses HTTP. On untrusted networks, put it behind a VPN or an HTTPS reverse proxy.
 
 #### Modbus Settings
 
@@ -158,17 +188,13 @@ XY-MD02_WebApp/
 
 #### Database Settings
 
-- `DATABASE_FILE`: Path to the SQLite database file
-- `DATA_RETENTION_DAYS`: Data retention in days (0 = infinite, otherwise number of days to keep data)
+- `DATABASE_FILE`: Path to the SQLite database file (stays in `.env`, it is needed before settings can be read)
 
-#### Application Settings
+#### Initial values for the Settings tab
 
-- `APP_HOST`: Server host IP (127.0.0.1 for local)
-- `APP_PORT`: Server port (8050)
-- `APP_DEBUG`: Debug mode (True/False)
-- `DEBUG_LOGGING`: Enable verbose debug logging to console (True/False, default: False)
-- `TIMEZONE`: Timezone for timestamp display (e.g., Europe/Amsterdam, America/New_York)
-- `DEFAULT_LANGUAGE`: Default UI language (EN, NL, DE, FR, ES, default: EN)
+Only read once, when the setting has never been saved: `DATA_RETENTION_DAYS`, `DEBUG_LOGGING`,
+`TIMEZONE`, `DEFAULT_LANGUAGE`. Listen address and port are set in the Settings tab only
+(default `0.0.0.0:8050`).
 
 ### Adding a New Language
 
@@ -381,7 +407,7 @@ app.py
 - Check write permissions in the project folder
 
 #### Port already in use
-- Change `APP_PORT` in `.env` to another port
+- Change the port in the Settings tab (Server section) and restart the app
 
 ### License
 

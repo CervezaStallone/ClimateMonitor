@@ -35,8 +35,9 @@ abstractions. Code, comments and naming follow the existing style of the repo.
 
 - Python 3.10-3.13 on Linux (Raspberry Pi / x86) and Windows.
 - Dash + Plotly UI, Waitress WSGI server, SQLite storage (table-per-day partitioning).
-- Modbus RTU over a single shared RS-485 bus (minimalmodbus); multiple slaves are addressed
-  by slave ID. Sensors report temperature and relative humidity.
+- Modbus RTU over one or more RS-485 buses (one serial interface each, e.g. USB dongles); each
+  bus carries one or more slaves addressed by slave ID (minimalmodbus). A slow or failing bus
+  must not delay the other buses. Sensors report temperature and relative humidity.
 - Existing single-sensor installations MUST upgrade without data loss: the current sensor
   becomes the first device.
 
