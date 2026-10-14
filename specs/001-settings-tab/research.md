@@ -19,8 +19,8 @@
 - **Rationale**: logout, password change and password reset must invalidate copied cookies, and the inactivity timeout must not be extendable by the client. A restart logs everyone out, which is acceptable.
 
 ## Throttling
-- **Decision**: in-memory failures per client (IPv4 address, IPv6 /64), 5 failures/5 min → block 5 min; above 50 failures/5 min across all clients each client gets only 1 attempt (a client without failures, i.e. the admin, can always log in); expired entries are pruned. Sessions store the hash that was actually verified, so a login racing a password change is not upgraded.
-- **Rationale**: single process; per-/64 and global caps stop bypass via many addresses; state loss on restart is acceptable.
+- **Decision**: in-memory failures per client (IPv4 address, IPv6 /64), 5 failures/5 min → block 5 min. Above 50 failures/5 min across all clients (attack from many addresses) only browsers with a signed 90-day "trusted browser" cookie (set on a successful login, kept after logout) may still try. Sessions store the hash that was actually verified, so a login racing a password change is not upgraded.
+- **Rationale**: per-address limits alone are bypassed with many addresses, a global hard block locks out the admin; the trusted-browser cookie keeps both. Residual: the admin on a new browser during an active attack waits up to 5 minutes (or uses `reset-password` locally).
 
 ## Host/port fallback
 - **Decision**: try stored host/port; on `OSError` while binding, log and retry with `.env`/defaults (`0.0.0.0:8050`).

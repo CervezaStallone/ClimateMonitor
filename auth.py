@@ -11,6 +11,7 @@ from html import escape
 from urllib.parse import urlsplit
 
 from flask import Response, has_request_context, redirect, request, session
+from itsdangerous import BadSignature, URLSafeTimedSerializer
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import settings
@@ -18,8 +19,10 @@ from translations import TRANSLATIONS
 
 MIN_PASSWORD_LENGTH = 8
 MAX_FAILURES = 5            # per client (IPv4 adres of IPv6 /64)
-MAX_FAILURES_GLOBAL = 50    # daarboven nog maar 1 poging per client (tegen omzeilen via veel adressen)
+MAX_FAILURES_GLOBAL = 50    # daarboven alleen nog pogingen vanaf vertrouwde browsers
 BLOCK_SECONDS = 300
+TRUSTED_COOKIE = 'xy_trusted'
+TRUSTED_DAYS = 90
 
 # ponytail: in-memory per proces (reset bij herstart = iedereen uitgelogd); voldoende voor één Waitress proces
 _failures = {}   # client -> [tijdstippen mislukte login]
@@ -99,11 +102,28 @@ def _client_key(ip):
     return str(addr)
 
 
-def _blocked_for(client):
+def _trusted_serializer():
+    return URLSafeTimedSerializer(settings.get('secret_key'), salt='trusted-browser')
+
+
+def _is_trusted_browser():
+    """Browser waarmee eerder succesvol is ingelogd (gesigneerde cookie, blijft na uitloggen)."""
+    token = request.cookies.get(TRUSTED_COOKIE)
+    if not token:
+        return False
+    try:
+        _trusted_serializer().loads(token, max_age=TRUSTED_DAYS * 86400)
+        return True
+    except BadSignature:
+        return False
+
+
+def _blocked_for(client, trusted=False):
     """Seconden dat deze client nog geblokkeerd is (0 = niet geblokkeerd).
 
-    Bij veel mislukte pogingen over alle clients samen krijgt elke client nog maar 1 poging;
-    een client zonder mislukte pogingen (de beheerder) kan dus altijd inloggen.
+    Per client (IPv4 / IPv6 /64) maximaal MAX_FAILURES pogingen. Bij een aanval vanaf veel adressen
+    (MAX_FAILURES_GLOBAL over alle clients) mogen alleen vertrouwde browsers nog proberen, zodat de
+    beheerder vanaf de eigen browser niet buitengesloten wordt.
     """
     now = time.time()
     with _lock:
@@ -113,9 +133,10 @@ def _blocked_for(client):
                 del _failures[key]
         mine = _failures.get(client, [])
         everyone = sorted(t for times in _failures.values() for t in times)
-    limit = 1 if len(everyone) >= MAX_FAILURES_GLOBAL else MAX_FAILURES
-    if len(mine) >= limit:
-        return int(BLOCK_SECONDS - (now - mine[-limit])) + 1
+    if len(mine) >= MAX_FAILURES:
+        return int(BLOCK_SECONDS - (now - mine[-MAX_FAILURES])) + 1
+    if len(everyone) >= MAX_FAILURES_GLOBAL and not trusted:
+        return int(BLOCK_SECONDS - (now - everyone[-MAX_FAILURES_GLOBAL])) + 1
     return 0
 
 
@@ -183,7 +204,7 @@ def _setup():
         code = set_password(request.form.get('password'), request.form.get('repeat'))
         if code is None:
             _start_session(settings.get('admin_password_hash'))
-            return redirect(_safe_next(request.form.get('next')))
+            return _trust_browser(redirect(_safe_next(request.form.get('next'))))
         error = t[code]
     return _page(t, t['setup_title'], t['setup_prompt'], t['btn_setup'], error, repeat=True)
 
@@ -194,7 +215,7 @@ def _login():
     t = TRANSLATIONS[_lang()]
     client = _client_key(request.remote_addr or '?')
     if request.method == 'POST':
-        wait = _blocked_for(client)
+        wait = _blocked_for(client, _is_trusted_browser())
         if wait:
             return _page(t, t['login_title'], t['login_prompt'], t['btn_login'],
                          t['err_login_blocked'].format(seconds=wait), status=429)
@@ -203,10 +224,16 @@ def _login():
             with _lock:
                 _failures.pop(client, None)
             _start_session(verified_hash)
-            return redirect(_safe_next(request.form.get('next')))
+            return _trust_browser(redirect(_safe_next(request.form.get('next'))))
         _record_failure(client)
         return _page(t, t['login_title'], t['login_prompt'], t['btn_login'], t['err_password_wrong'], status=401)
     return _page(t, t['login_title'], t['login_prompt'], t['btn_login'])
+
+
+def _trust_browser(response):
+    response.set_cookie(TRUSTED_COOKIE, _trusted_serializer().dumps('admin'), max_age=TRUSTED_DAYS * 86400,
+                        httponly=True, samesite='Lax')
+    return response
 
 
 def _logout():
