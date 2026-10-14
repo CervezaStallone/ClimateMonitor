@@ -3,21 +3,28 @@
 auth_mode 'settings': alleen de Settings tab vraagt om login (dashboard is openbaar).
 auth_mode 'app':      de hele app vraagt om login.
 """
+import ipaddress
+import secrets
+import threading
 import time
 from html import escape
+from urllib.parse import urlsplit
 
-from flask import Response, redirect, request, session
+from flask import Response, has_request_context, redirect, request, session
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import settings
 from translations import TRANSLATIONS
 
 MIN_PASSWORD_LENGTH = 8
-MAX_FAILURES = 5
+MAX_FAILURES = 5            # per client (IPv4 adres of IPv6 /64)
+MAX_FAILURES_GLOBAL = 50    # alle clients samen, tegen omzeilen via veel adressen
 BLOCK_SECONDS = 300
 
-# ponytail: in-memory per proces, reset bij herstart; voldoende voor één Waitress proces
-_failures = {}
+# ponytail: in-memory per proces (reset bij herstart = iedereen uitgelogd); voldoende voor één Waitress proces
+_failures = {}   # client -> [tijdstippen mislukte login]
+_sessions = {}   # sid -> {'last_seen': tijd, 'pw': hash op moment van inloggen}
+_lock = threading.Lock()
 
 PUBLIC_PATHS = ('/login', '/setup', '/logout')
 
@@ -39,38 +46,85 @@ def set_password(password, repeat):
 def change_password(current, new, repeat):
     if not check_password_hash(settings.get('admin_password_hash') or '', current or ''):
         return 'err_password_wrong'
-    return set_password(new, repeat)
+    error = set_password(new, repeat)
+    if error is None:
+        # Andere sessies intrekken, de huidige blijft ingelogd
+        sid = session.get('sid') if has_request_context() else None
+        with _lock:
+            current_session = _sessions.get(sid)
+            _sessions.clear()
+            if current_session:
+                current_session['pw'] = settings.get('admin_password_hash')
+                _sessions[sid] = current_session
+    return error
 
 
 def is_logged_in():
-    if not session.get('admin') or not has_password():
+    """Sessie is server-side geldig: niet uitgelogd, niet verlopen, wachtwoord sindsdien niet gewijzigd."""
+    sid = session.get('sid')
+    if not sid:
         return False
-    if time.time() - session.get('last_seen', 0) > settings.get('session_timeout_minutes') * 60:
-        session.clear()
-        return False
-    session['last_seen'] = time.time()
+    now = time.time()
+    with _lock:
+        entry = _sessions.get(sid)
+        if (entry is None or not has_password() or entry['pw'] != settings.get('admin_password_hash')
+                or now - entry['last_seen'] > settings.get('session_timeout_minutes') * 60):
+            _sessions.pop(sid, None)
+            return False
+        entry['last_seen'] = now
     return True
 
 
 def _start_session():
+    sid = secrets.token_urlsafe(32)
+    with _lock:
+        _sessions.pop(session.get('sid'), None)
+        _sessions[sid] = {'last_seen': time.time(), 'pw': settings.get('admin_password_hash')}
     session.clear()
-    session['admin'] = True
-    session['last_seen'] = time.time()
+    session['sid'] = sid
 
 
-def _blocked_for(ip):
-    """Seconden dat dit IP nog geblokkeerd is (0 = niet geblokkeerd)."""
+def _client_key(ip):
+    """IPv6 per /64 groeperen: één aansluiting heeft er vaak miljarden adressen."""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return ip
+    if addr.version == 6:
+        if addr.ipv4_mapped:
+            return str(addr.ipv4_mapped)
+        return str(ipaddress.ip_network(f'{addr}/64', strict=False))
+    return str(addr)
+
+
+def _blocked_for(client):
+    """Seconden dat deze client (of iedereen) nog geblokkeerd is (0 = niet geblokkeerd)."""
     now = time.time()
-    recent = [t for t in _failures.get(ip, []) if now - t < BLOCK_SECONDS]
-    _failures[ip] = recent
-    if len(recent) >= MAX_FAILURES:
-        return int(BLOCK_SECONDS - (now - recent[0])) + 1
+    with _lock:
+        for key in list(_failures):
+            _failures[key] = [t for t in _failures[key] if now - t < BLOCK_SECONDS]
+            if not _failures[key]:
+                del _failures[key]
+        mine = _failures.get(client, [])
+        everyone = sorted(t for times in _failures.values() for t in times)
+    if len(mine) >= MAX_FAILURES:
+        return int(BLOCK_SECONDS - (now - mine[0])) + 1
+    if len(everyone) >= MAX_FAILURES_GLOBAL:
+        return int(BLOCK_SECONDS - (now - everyone[-MAX_FAILURES_GLOBAL])) + 1
     return 0
+
+
+def _record_failure(client):
+    with _lock:
+        _failures.setdefault(client, []).append(time.time())
 
 
 def _safe_next(target):
     """Alleen lokale paden als redirect doel (geen open redirect)."""
-    if not target or not target.startswith('/') or target.startswith('//') or '\\' in target:
+    if not target or any(ord(c) < 0x21 or c == '\\' for c in target):
+        return '/'
+    parts = urlsplit(target)
+    if parts.scheme or parts.netloc or not target.startswith('/') or target.startswith('//'):
         return '/'
     return target
 
@@ -133,22 +187,25 @@ def _login():
     if not has_password():
         return redirect('/setup?next=' + _safe_next(request.values.get('next')))
     t = TRANSLATIONS[_lang()]
-    ip = request.remote_addr or '?'
+    client = _client_key(request.remote_addr or '?')
     if request.method == 'POST':
-        wait = _blocked_for(ip)
+        wait = _blocked_for(client)
         if wait:
             return _page(t, t['login_title'], t['login_prompt'], t['btn_login'],
                          t['err_login_blocked'].format(seconds=wait), status=429)
         if check_password_hash(settings.get('admin_password_hash'), request.form.get('password') or ''):
-            _failures.pop(ip, None)
+            with _lock:
+                _failures.pop(client, None)
             _start_session()
             return redirect(_safe_next(request.form.get('next')))
-        _failures.setdefault(ip, []).append(time.time())
+        _record_failure(client)
         return _page(t, t['login_title'], t['login_prompt'], t['btn_login'], t['err_password_wrong'], status=401)
     return _page(t, t['login_title'], t['login_prompt'], t['btn_login'])
 
 
 def _logout():
+    with _lock:
+        _sessions.pop(session.get('sid'), None)
     session.clear()
     return redirect('/')
 

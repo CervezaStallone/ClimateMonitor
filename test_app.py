@@ -33,6 +33,7 @@ def make_client():
     app.add_url_rule('/', 'index', lambda: 'dashboard')
     app.add_url_rule('/_dash-update-component', 'dash', lambda: 'data', methods=['POST'])
     auth._failures.clear()
+    auth._sessions.clear()
     return app.test_client()
 
 
@@ -120,7 +121,7 @@ def test_setup_then_login_flow():
     assert client.get('/setup').status_code == 302          # setup kan maar één keer
     client.get('/logout')
     assert client.post('/login', data={'password': 'fout'}).status_code == 401
-    r = client.post('/login', data={'password': 'geheim123', 'next': '//evil.example'})
+    r = client.post('/login', data={'password': 'geheim123', 'next': '/\t/evil.example'})
     assert r.status_code == 302 and r.headers['Location'] == '/'   # geen open redirect
 
 
@@ -160,9 +161,65 @@ def test_session_expires():
     settings.save({'auth_mode': 'app', 'session_timeout_minutes': 5})
     client = make_client()
     client.post('/login', data={'password': 'geheim123'})
-    with client.session_transaction() as sess:
-        sess['last_seen'] = time.time() - 6 * 60
+    for entry in auth._sessions.values():
+        entry['last_seen'] = time.time() - 6 * 60   # server-side, de client kan dit niet verlengen
     assert client.get('/').status_code == 302
+
+
+def test_logout_revokes_copied_cookie():
+    fresh_settings()
+    auth.set_password('geheim123', 'geheim123')
+    settings.save({'auth_mode': 'app'})
+    client = make_client()
+    client.post('/login', data={'password': 'geheim123'})
+    with client.session_transaction() as sess:
+        stolen = dict(sess)
+    client.get('/logout')
+    with client.session_transaction() as sess:
+        sess.update(stolen)
+    assert client.get('/').status_code == 302
+
+
+def test_password_change_revokes_other_sessions():
+    fresh_settings()
+    auth.set_password('geheim123', 'geheim123')
+    settings.save({'auth_mode': 'app'})
+    client, other = make_client(), None
+    app = client.application
+    other = app.test_client()
+    client.post('/login', data={'password': 'geheim123'})
+    other.post('/login', data={'password': 'geheim123'})
+    with app.test_request_context():
+        from flask import session
+        with client.session_transaction() as sess:
+            session['sid'] = sess['sid']
+        assert auth.change_password('geheim123', 'nieuw12345', 'nieuw12345') is None
+    assert client.get('/').status_code == 200
+    assert other.get('/').status_code == 302
+
+
+def test_reset_password_revokes_sessions():
+    fresh_settings()
+    auth.set_password('geheim123', 'geheim123')
+    settings.save({'auth_mode': 'app'})
+    client = make_client()
+    client.post('/login', data={'password': 'geheim123'})
+    settings.delete_internal('admin_password_hash')
+    auth.set_password('anders1234', 'anders1234')        # nieuw wachtwoord via /setup
+    assert client.get('/').status_code == 302
+
+
+def test_no_open_redirect():
+    for target in ['//evil.example', '/\\evil.example', '/\t/evil.example', 'https://evil.example', 'javascript:alert(1)',
+                   '/\n/evil.example', ' /x']:
+        assert auth._safe_next(target) == '/', target
+    assert auth._safe_next('/?tab=settings') == '/?tab=settings'
+
+
+def test_ipv6_clients_grouped_per_64():
+    assert auth._client_key('2001:db8::1') == auth._client_key('2001:db8::ffff:1234')
+    assert auth._client_key('2001:db8:0:1::1') != auth._client_key('2001:db8::1')
+    assert auth._client_key('::ffff:192.0.2.7') == '192.0.2.7'
 
 
 if __name__ == '__main__':
