@@ -1,6 +1,16 @@
 # Climate Monitor
 A real-time climate monitoring dashboard for Modbus RTU temperature and humidity sensors (XY-MD02, XY-MD04 and similar) that reads, visualizes and analyzes their data.
 
+<p>
+  <a href="https://brdc.nl/en/climatemonitor/">Project page</a> ·
+  <a href="https://brdc.nl/nl/climatemonitor/">Nederlands</a> ·
+  <a href="https://brdc.nl/de/climatemonitor/">Deutsch</a>
+</p>
+
+<a href="https://buymeacoffee.com/Cervezastalone" target="_blank" title="buymeacoffee">
+  <img src="https://iili.io/JoQ1MeS.md.png"  alt="buymeacoffee-yellow-badge" style="width: 208px;">
+</a>
+
 ### Features
 
 - **Real-time monitoring**: Live charts with automatic updates (1 second interval)
