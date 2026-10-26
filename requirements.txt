@@ -31,7 +31,7 @@ setuptools==84.0.0
 six==1.17.0
 tenacity==9.2.1
 typing_extensions==4.16.0
-tzdata==2025.3
+tzdata==2026.5
 urllib3==2.8.0
 waitress==3.0.2
 Werkzeug==3.1.9
