@@ -2,6 +2,20 @@
 
 All notable changes to Climate Monitor. Older versions: see the [GitHub releases](https://github.com/CervezaStallone/ClimateMonitor/releases).
 
+## [2.2.0] - 2026-10-30
+
+### Changed
+- Dash 3.3 → 4.4.1. Dash 4 replaces the dropdowns, number fields, slider and date picker with new components; they are styled to match the dark and light theme.
+- The time slider of the historical replay no longer shows a separate number field.
+
+### Fixed
+- The sensor choice above the chart shows "All sensors" right after loading instead of an empty box.
+
+### Dependencies
+- certifi 2026.10.23, importlib-metadata 9.0.1, packaging 26.3, python-dateutil 3.0.0, pytz 2026.5.
+
+**Upgrading:** see [Updating to a new version](README.md#updating-to-a-new-version). Reload the dashboard with `Ctrl+F5` afterwards, because the browser may still have the old Dash components cached.
+
 ## [2.1.1] - 2026-10-30
 
 ### Security

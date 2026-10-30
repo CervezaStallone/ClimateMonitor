@@ -611,10 +611,7 @@ def register_callbacks(app):
          Input('main-tabs', 'value')]
     )
     def update_device_options(pathname, lang, tab):
-        """Keuzelijst: alle devices gecombineerd + elk device"""
-        t = TRANSLATIONS.get(lang) or TRANSLATIONS['en']
-        return [{'label': t['opt_all_devices'], 'value': 0}] + [
-            {'label': f"#{d['id']} {d['name']}", 'value': d['id']} for d in devices.list_devices()]
+        return layout.device_options(TRANSLATIONS.get(lang) or TRANSLATIONS['en'])
 
     @app.callback(
         [Output('history-controls', 'style'),

@@ -1,5 +1,6 @@
 from dash import dcc, html
 
+import devices
 import settings
 from translations import LANGUAGE_NAMES, TRANSLATIONS
 
@@ -13,7 +14,7 @@ HTML_TEMPLATE = '''
         {%favicon%}
         {%css%}
         <style>
-            .theme-dark, .theme-dark .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner table {
+            .theme-dark, body:has(.theme-dark), .theme-dark .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner table {
                 --bg: #1b1f23; --panel: #24292e; --panel-2: #1f2428; --line: #343a41; --line-strong: #4a525a;
                 --text: #e6e8e3; --muted: #a2a9a2; --cell: #141a17; --digit: #d4ecc9;
                 --accent: #6aa8e8; --accent-ink: #0f1a26; --hover: #2c3238;
@@ -21,7 +22,7 @@ HTML_TEMPLATE = '''
                 --alarm-cell: #3a1d1b; --warn-cell: #33291a;
                 color-scheme: dark;
             }
-            .theme-light, .theme-light .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner table {
+            .theme-light, body:has(.theme-light), .theme-light .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner table {
                 --bg: #e8e9e4; --panel: #f7f7f3; --panel-2: #fbfbf8; --line: #cdd0c9; --line-strong: #a9ada5;
                 --text: #1b1f23; --muted: #555c55; --cell: #dde5d6; --digit: #1e2a1b;
                 --accent: #1f5fa8; --accent-ink: #ffffff; --hover: #eceee8;
@@ -30,7 +31,16 @@ HTML_TEMPLATE = '''
                 color-scheme: light;
             }
             /* De DataTable zet eigen --accent/--hover/--muted op zijn tabel (roze focus, witte opties): thema-tokens
-               hierboven daarom ook op die tabel. */
+               hierboven daarom ook op die tabel. Ook op body: keuzelijsten en datumkiezers van Dash renderen hun
+               uitklapmenu direct onder body, buiten #app-root. */
+            body {
+                --Dash-Stroke-Strong: var(--line-strong); --Dash-Stroke-Weak: var(--line);
+                --Dash-Fill-Interactive-Strong: var(--accent); --Dash-Fill-Interactive-Weak: var(--hover);
+                --Dash-Fill-Inverse-Strong: var(--panel-2); --Dash-Fill-Disabled: var(--line);
+                --Dash-Fill-Primary-Hover: var(--hover); --Dash-Fill-Primary-Active: var(--hover);
+                --Dash-Text-Primary: var(--text); --Dash-Text-Strong: var(--text);
+                --Dash-Text-Weak: var(--muted); --Dash-Text-Disabled: var(--muted);
+            }
             :root { --sans: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell, "Noto Sans", sans-serif;
                     --mono: ui-monospace, "DejaVu Sans Mono", "Cascadia Mono", Menlo, Consolas, monospace; }
             html, body { margin: 0; }
@@ -38,7 +48,9 @@ HTML_TEMPLATE = '''
             #app-root { min-height: 100vh; background: var(--bg); color: var(--text); font-size: 14px; }
             #app-root ::selection { background: var(--accent); color: var(--accent-ink); }
             #app-root * { box-sizing: border-box; scrollbar-color: var(--line-strong) transparent; }
-            #app-root :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+            /* Velden van Dash tonen de focus zelf op hun omlijsting */
+            #app-root :focus-visible:not(.dash-input-element):not(.dash-datepicker-input) {
+                outline: 2px solid var(--accent); outline-offset: 2px; }
             .d { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 
             /* Header */
@@ -257,6 +269,12 @@ def metric_options(t):
             if m != 'comfort' or settings.get('show_comfort')]
 
 
+def device_options(t):
+    """Keuzelijst: alle devices gecombineerd + elk device"""
+    return [{'label': t['opt_all_devices'], 'value': 0}] + [
+        {'label': f"#{d['id']} {d['name']}", 'value': d['id']} for d in devices.list_devices()]
+
+
 def mollier_style():
     return {} if settings.get('show_mollier') else {'display': 'none'}
 
@@ -300,7 +318,8 @@ def create_layout():
                 html.Div(className='panel-head', children=[
                     dcc.RadioItems(id='metric-tabs', className='tabs', options=metric_options(t), value='temperature'),
                     html.Div(className='controls', children=[
-                        dcc.Dropdown(id='device-selector', className='ctl-device', value=0, clearable=False),
+                        dcc.Dropdown(id='device-selector', className='ctl-device', options=device_options(t), value=0,
+                                     clearable=False),
                         dcc.Dropdown(id='time-range-dropdown', className='ctl-range', options=range_options(t),
                                      value=1440, clearable=False, searchable=False),
                     ]),
@@ -325,7 +344,7 @@ def create_layout():
                     html.Label(id='label-time-position', className='field-label', children=t['time_position']),
                     html.Div(id='slider-timestamp-display', className='slider-time'),
                     dcc.Slider(id='historical-time-slider', min=0, max=100, step=1, value=0, marks={},
-                               tooltip={'placement': 'bottom', 'always_visible': False}),
+                               tooltip={'placement': 'bottom', 'always_visible': False}, allow_direct_input=False),
                 ]),
             ]),
 
