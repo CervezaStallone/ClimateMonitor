@@ -653,3 +653,9 @@ pip freeze > requirements.txt
 ### License
 
 This project is open source and available under the [MIT License](LICENSE).
+
+Third-party packages are installed by pip under their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+Modbus® is a registered trademark of Schneider Electric, licensed to the Modbus Organization. ClimateMonitor is an independent project, not affiliated with or endorsed by the Modbus Organization or Schneider Electric.
+
+The software is provided as is, without any warranty (see [LICENSE](LICENSE)). Use it at your own risk; to the extent permitted by law, BRDC is not liable for any damage caused by its use.
