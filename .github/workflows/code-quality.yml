@@ -14,6 +14,7 @@ jobs:
   lint:
     name: Code Quality Checks
     runs-on: ubuntu-latest
+    timeout-minutes: 15  # setup-python sometimes hangs on the runner: fail instead of waiting 6 hours
     
     steps:
     - name: Checkout code
