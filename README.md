@@ -206,6 +206,22 @@ the script refuses to install from a folder that normal users can modify.
 
 > After installing, open `http://<device-ip>:8050`, go to **Settings** and set the admin password.
 
+### Updating to a new version
+
+Measurements, sensors and settings are stored in the database file and are kept during an update. Settings from older versions (including `.env` values from before the Settings tab) are taken over automatically on the first start.
+
+1. **Back up the database.** Stop the app (`sudo systemctl stop xy-md02`, stop the service in `services.msc` on Windows, or `Ctrl+C`) and copy the database file (default `src/modbus_sensor_data.db`, see `DATABASE_FILE` in `.env`).
+2. **Get the new version.** Run `git pull` in the app folder. If you installed from a ZIP, unpack the new ZIP over the existing folder and keep `.env` and `src/`.
+3. **Update the dependencies and start the app.**
+   - Linux service: `sudo ./deploy/linux/install-service.sh`
+   - Windows service (PowerShell as Administrator): `powershell -ExecutionPolicy Bypass -File .\deploy\windows\install-service.ps1` (add `-Port <number>` if you changed the port)
+   - Started by hand: activate the virtual environment, then `pip install -r requirements.txt` and `python app.py`
+4. **Reload the dashboard** with `Ctrl+F5`.
+
+Coming from a version without the Settings tab? Open **Settings** after the update and set an admin password.
+
+What changed in each version: see [CHANGELOG.md](CHANGELOG.md).
+
 ### Project Structure
 
 ```
@@ -271,7 +287,7 @@ Open the **Settings** tab in the web app. The first visit asks you to create an 
 
 | Section | Settings |
 |---------|----------|
-| Display | Dashboard view (Board / Meters), theme (Dark / Light) |
+| Display | Dashboard view (Board / Meters), theme (Dark / Light), show or hide comfort and the Mollier diagram |
 | Modbus buses and sensors | Poll interval, buses (RS-485 interfaces), sensors (Modbus slaves) |
 | Notifications: channels | Telegram bot token and chat ID, SMTP server, sender and recipients, test buttons |
 | MQTT | Broker, port, TLS, login, client ID, topic prefix, publish interval, QoS, retain, test button |
