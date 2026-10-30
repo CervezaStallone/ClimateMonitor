@@ -22,7 +22,7 @@ paho-mqtt==2.1.0
 pandas==2.3.3
 plotly==7.1.0
 pyserial==3.5
-python-dateutil==2.9.0.post0
+python-dateutil==3.0.0
 python-dotenv==1.2.4
 pytz==2026.5
 requests==2.34.2
