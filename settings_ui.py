@@ -8,6 +8,7 @@ from dash import ALL, Input, Output, State, callback_context, dash_table, dcc, h
 import alerts
 import auth
 import devices
+import layout
 import mqtt_publisher
 import settings
 from translations import LANGUAGE_NAMES, TRANSLATIONS
@@ -104,8 +105,14 @@ def _device_table(device_rows, bus_names, t):
         **TABLE_STYLE)
 
 
+# Actieve/geselecteerde cel in thema-kleuren (anders zet de DataTable er inline hotpink op)
+CELL_STATES = [{'if': {'state': state}, 'backgroundColor': 'var(--hover)', 'border': '1px solid var(--accent)'}
+               for state in ('active', 'selected')]
+
 TABLE_STYLE = {
-    'style_table': {'overflowX': 'auto', 'marginBottom': '10px'},
+    'style_data_conditional': CELL_STATES,
+    # Geen overflow op brede schermen: die knipt de keuzelijsten in de cellen af (alleen mobiel scrollt, zie layout.py)
+    'style_table': {'marginBottom': '10px'},
     'style_cell': {'fontFamily': 'var(--sans)', 'fontSize': '14px', 'padding': '7px 8px', 'minWidth': '70px',
                    'backgroundColor': 'var(--panel-2)', 'color': 'var(--text)', 'border': '1px solid var(--line)',
                    'textAlign': 'left'},
@@ -371,7 +378,7 @@ def register_settings_callbacks(app):
         _, rule_errors = alerts.validate_rules(rule_rows or [])
         if rule_errors:
             errors = {**errors, 'rules': rule_errors}
-        messages, styles = [], {'buses': [], 'devices': [], 'rules': []}
+        messages, styles = [], {'buses': list(CELL_STATES), 'devices': list(CELL_STATES), 'rules': list(CELL_STATES)}
         for table in ('buses', 'devices', 'rules'):
             for row, fields in errors.get(table, {}).items():
                 for field, code in fields.items():
@@ -382,7 +389,8 @@ def register_settings_callbacks(app):
         if errors:
             return html.Ul(messages), styles['buses'], styles['devices'], no_update, no_update, styles['rules'], no_update
         buses, device_rows = devices.load_config()
-        return '', [], [], _table_rows(buses, BUS_COLUMNS), _table_rows(device_rows, DEVICE_COLUMNS), [], _rule_rows()
+        return ('', CELL_STATES, CELL_STATES, _table_rows(buses, BUS_COLUMNS), _table_rows(device_rows, DEVICE_COLUMNS),
+                CELL_STATES, _rule_rows())
 
     @app.callback(
         Output('bus-table', 'data'),
@@ -526,13 +534,22 @@ def register_settings_callbacks(app):
 
     @app.callback(
         [Output('app-root', 'className', allow_duplicate=True),
-         Output('view-toggle', 'value')],
+         Output('view-toggle', 'value'),
+         Output('metric-tabs', 'options', allow_duplicate=True),
+         Output('metric-tabs', 'value'),
+         Output('mollier-panel', 'style')],
         Input('settings-status', 'children'),
+        [State('selected-language', 'data'),
+         State('metric-tabs', 'value')],
         prevent_initial_call=True
     )
-    def apply_saved_display(status):
-        """Na opslaan thema en weergave direct toepassen"""
-        return f"theme-{settings.get('dashboard_theme')}", settings.get('dashboard_view')
+    def apply_saved_display(status, lang, metric):
+        """Na opslaan thema, weergave, comfort en Mollier diagram direct toepassen"""
+        options = layout.metric_options(_t(lang))
+        if metric not in [o['value'] for o in options]:
+            metric = 'temperature'
+        return (f"theme-{settings.get('dashboard_theme')}", settings.get('dashboard_view'), options, metric,
+                layout.mollier_style())
 
     @app.callback(
         [Output('pw-status', 'children'),

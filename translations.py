@@ -287,6 +287,8 @@ TRANSLATIONS = {
         'opt_dashboard_theme_dark': 'Donker',
         'opt_dashboard_theme_light': 'Licht',
         'hint_dashboard_view': 'Geldt voor alle browsers. De schakelaar bovenin het dashboard wisselt tijdelijk, tot de pagina opnieuw geladen wordt.',
+        'lbl_show_comfort': 'Behagelijkheid tonen',
+        'lbl_show_mollier': 'Mollier-diagram tonen',
     },
     'en': {
         'title': 'Modbus Climate Monitor',
@@ -568,6 +570,8 @@ TRANSLATIONS = {
         'opt_dashboard_theme_dark': 'Dark',
         'opt_dashboard_theme_light': 'Light',
         'hint_dashboard_view': 'Applies to all browsers. The switch at the top of the dashboard changes the view temporarily, until the page is reloaded.',
+        'lbl_show_comfort': 'Show comfort',
+        'lbl_show_mollier': 'Show Mollier diagram',
     },
     'de': {
         'title': 'Modbus Klimamonitor',
@@ -849,6 +853,8 @@ TRANSLATIONS = {
         'opt_dashboard_theme_dark': 'Dunkel',
         'opt_dashboard_theme_light': 'Hell',
         'hint_dashboard_view': 'Gilt für alle Browser. Der Umschalter oben im Dashboard wechselt vorübergehend, bis die Seite neu geladen wird.',
+        'lbl_show_comfort': 'Komfort anzeigen',
+        'lbl_show_mollier': 'Mollier-Diagramm anzeigen',
     },
     'fr': {
         'title': 'Moniteur Climatique Modbus',
@@ -1130,6 +1136,8 @@ TRANSLATIONS = {
         'opt_dashboard_theme_dark': 'Sombre',
         'opt_dashboard_theme_light': 'Clair',
         'hint_dashboard_view': "S'applique à tous les navigateurs. Le sélecteur en haut du tableau de bord change la vue temporairement, jusqu'au rechargement de la page.",
+        'lbl_show_comfort': 'Afficher le confort',
+        'lbl_show_mollier': 'Afficher le diagramme de Mollier',
     },
     'es': {
         'title': 'Monitor Climático Modbus',
@@ -1411,5 +1419,7 @@ TRANSLATIONS = {
         'opt_dashboard_theme_dark': 'Oscuro',
         'opt_dashboard_theme_light': 'Claro',
         'hint_dashboard_view': 'Se aplica a todos los navegadores. El selector en la parte superior del panel cambia la vista temporalmente, hasta que se recarga la página.',
+        'lbl_show_comfort': 'Mostrar confort',
+        'lbl_show_mollier': 'Mostrar diagrama de Mollier',
     }
 }

@@ -29,6 +29,8 @@ LANGUAGES = ['nl', 'en', 'de', 'fr', 'es']
 SCHEMA = {
     'dashboard_view': {'type': str, 'default': 'board', 'section': 'display', 'choices': ['board', 'meters']},
     'dashboard_theme': {'type': str, 'default': 'dark', 'section': 'display', 'choices': ['dark', 'light']},
+    'show_comfort': {'type': bool, 'default': True, 'section': 'display'},
+    'show_mollier': {'type': bool, 'default': True, 'section': 'display'},
     'poll_interval_seconds': {'type': int, 'default': 1, 'section': 'modbus', 'min': 1, 'max': 3600},
     'data_retention_days': {'type': int, 'default': 0, 'env': 'DATA_RETENTION_DAYS', 'section': 'data',
                             'min': 0, 'max': 3650},

@@ -436,6 +436,27 @@ def test_writer_stores_device_and_splits_days():
     conn.close()
 
 
+def test_graph_data_is_averaged_in_sqlite():
+    """Grafiek krijgt gemiddelden per interval en het totaal aantal metingen, niet alle ruwe rijen."""
+    import callbacks
+    fresh_settings()
+    database.init_database()
+    conn = sqlite3.connect(settings.DB_FILE)
+    table = database.get_table_name()
+    start = int(time.time()) // 300 * 300 - 600  # twee volle intervallen van 5 minuten
+    conn.executemany(f'INSERT INTO {table} (timestamp, temperature, humidity, dewpoint, absolute_humidity, device_id) '
+                     'VALUES (?, ?, 50, NULL, NULL, ?)',
+                     [(start + s, 20 + s // 300, d) for s in range(600) for d in (1, 2)])
+    conn.commit()
+    conn.close()
+    df, bucket = callbacks.graph_data(1440)
+    assert bucket == 300
+    assert len(df) == 4 and df['n'].sum() == 1200
+    assert sorted(df[df['device_id'] == 1]['temperature']) == [20, 21]
+    df, _ = callbacks.graph_data(1440, device_id=2)
+    assert set(df['device_id']) == {2}
+
+
 def test_settings_callbacks_require_login():
     """Settings callbacks geven zonder login geen configuratie, poorten of status terug."""
     import dash

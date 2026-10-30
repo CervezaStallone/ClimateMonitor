@@ -61,46 +61,42 @@ def style_figure(fig, mode, height=None):
     return fig
 
 
-def downsample(df, time_range_minutes):
-    """Adaptive downsampling voor betere performance bij lange tijdsbereiken.
+def bucket_seconds(time_range_minutes):
+    """Middelingsinterval voor de grafiek: max ~1000-2000 punten per sensor."""
+    for limit, seconds in ((60, 1), (360, 60), (1440, 300), (10080, 900), (43200, 3600), (129600, 10800), (259200, 21600)):
+        if time_range_minutes <= limit:
+            return seconds
+    return 86400
 
-    Houdt max ~1000-2000 punten voor snelle rendering. df heeft een 'timestamp' kolom (datetime).
+
+def graph_data(time_range_minutes, device_id=None):
+    """Metingen per sensor, al gemiddeld per interval in SQLite.
+
+    Nooit alle ruwe metingen naar pandas: bij 1 s polling en meerdere sensoren duurde dat langer dan
+    het verversinterval van de grafiek, waardoor elke update verviel en de grafiek leeg bleef.
+    Geeft (DataFrame met kolom n = aantal metingen per punt, interval in seconden).
     """
-    original_points = len(df)
-    if time_range_minutes > 60 or original_points > 5000:  # Meer dan 1 uur OF veel data
-        df = df.set_index('timestamp')
-        
-        if time_range_minutes == -1:  # Alle data: intelligente sampling
-            total_days = (df.index.max() - df.index.min()).total_seconds() / 86400
-            if total_days > 365:  # > 1 jaar: 1 dag gemiddelde
-                df = df.resample('1D').mean()
-            elif total_days > 90:  # 3-12 maanden: 6 uur gemiddelde
-                df = df.resample('6h').mean()
-            elif total_days > 30:  # 1-3 maanden: 2 uur gemiddelde
-                df = df.resample('2h').mean()
-            else:  # < 1 maand: 1 uur gemiddelde
-                df = df.resample('1h').mean()
-        elif time_range_minutes <= 360:  # 1-6 uur: 1 minuut
-            df = df.resample('1min').mean()
-        elif time_range_minutes <= 1440:  # 6-24 uur: 5 minuten
-            df = df.resample('5min').mean()
-        elif time_range_minutes <= 10080:  # 1-7 dagen: 15 minuten
-            df = df.resample('15min').mean()
-        elif time_range_minutes <= 43200:  # 1 maand: 1 uur
-            df = df.resample('1h').mean()
-        elif time_range_minutes <= 129600:  # 3 maanden: 3 uur
-            df = df.resample('3h').mean()
-        elif time_range_minutes <= 259200:  # 6 maanden: 6 uur
-            df = df.resample('6h').mean()
-        else:  # > 6 maanden: 1 dag
-            df = df.resample('1D').mean()
-        
-        df = df.dropna().reset_index()
-        
-        if settings.get('debug_logging'):
-            reduction = 100 * (1 - len(df)/original_points)
-            print(f"   → Downsampled: {original_points} → {len(df)} punten (-{reduction:.1f}%)")
-    return df
+    conn = sqlite3.connect(DB_FILE)
+    try:
+        cursor = conn.cursor()
+        start = None
+        if time_range_minutes == -1:  # Alle data: interval op basis van de oudste dagtabel
+            tables = get_all_measurement_tables(cursor)
+            oldest = datetime.strptime(tables[0].replace('measurements_', ''), '%Y%m%d') if tables else datetime.now()
+            bucket = bucket_seconds((datetime.now() - oldest).total_seconds() / 60)
+        else:
+            start = int((datetime.now() - timedelta(minutes=time_range_minutes)).timestamp())
+            bucket = bucket_seconds(time_range_minutes)
+        columns = ['timestamp', 'temperature', 'humidity', 'dewpoint', 'absolute_humidity', 'device_id']
+        query, _ = build_union_query(cursor, columns, start_timestamp=start, device_id=device_id, order_by=None)
+        if not query:
+            return pd.DataFrame(columns=columns + ['n']), bucket
+        query = (f'SELECT timestamp / {bucket} * {bucket} AS timestamp, AVG(temperature) AS temperature, '
+                 f'AVG(humidity) AS humidity, AVG(dewpoint) AS dewpoint, AVG(absolute_humidity) AS absolute_humidity, '
+                 f'device_id, COUNT(*) AS n FROM ({query}) GROUP BY device_id, timestamp / {bucket} ORDER BY timestamp')
+        return pd.read_sql_query(query, conn), bucket
+    finally:
+        conn.close()
 
 
 def humidex_score(temp, hum):
@@ -116,15 +112,14 @@ def humidex_score(temp, hum):
     return 0
 
 
-def metric_figure(df, names, colors, metric, time_range_minutes, t, mode):
+def metric_figure(df, names, colors, metric, t, mode):
     """Eén grootheid, één lijn per sensor (of één sensor), in de kleuren van het thema."""
     fig = go.Figure()
     unit = METRIC_UNITS[metric]
     for device_id, name in names.items():
-        group = df[df['device_id'] == device_id].drop(columns='device_id')
+        group = df[df['device_id'] == device_id]
         if group.empty:
             continue
-        group = downsample(group, time_range_minutes)
         if metric == 'comfort':
             values = [humidex_score(tmp, hum) for tmp, hum in zip(group['temperature'], group['humidity'])]
         else:
@@ -192,13 +187,12 @@ def sparkline_data():
     data = {}
     conn = sqlite3.connect(DB_FILE)
     try:
-        query, _ = build_union_query(conn.cursor(), ['timestamp', 'temperature', 'device_id'], start_timestamp=int(now - 86400))
+        query, _ = build_union_query(conn.cursor(), ['timestamp', 'temperature', 'device_id'], start_timestamp=int(now - 86400),
+                                     order_by=None)
         if query:
-            df = pd.read_sql_query(query, conn)
-            if not df.empty:
-                df['bucket'] = df['timestamp'] // 900
-                for device_id, group in df.groupby('device_id'):
-                    data[int(device_id)] = group.groupby('bucket')['temperature'].mean().tolist()
+            for device_id, temp in conn.execute(f'SELECT device_id, AVG(temperature) FROM ({query}) '
+                                                f'GROUP BY device_id, timestamp / 900 ORDER BY device_id, timestamp / 900'):
+                data.setdefault(int(device_id), []).append(temp)
     finally:
         conn.close()
     _spark_cache.update(at=now, data=data)
@@ -276,28 +270,21 @@ def register_callbacks(app):
     )
     def update_graph(n, time_range_minutes, relayout_data, lang, device_sel, metric, stored_relayout, tab):
         """Grafiek van één grootheid: één lijn per sensor of alleen de gekozen sensor"""
-        if tab == 'settings' and callback_context.triggered_id == 'graph-update':
-            return no_update, no_update, no_update
-        t = TRANSLATIONS.get(lang) or TRANSLATIONS['en']
-        mode = theme_mode()
         metric = metric or 'temperature'
         time_range_minutes = time_range_minutes or 1440
+        if callback_context.triggered_id == 'graph-update':
+            # Lange bereiken middelen over minuten of meer: elke seconde opnieuw tekenen heeft geen zin
+            if tab == 'settings' or n % min(bucket_seconds(time_range_minutes), 30):
+                return no_update, no_update, no_update
+        t = TRANSLATIONS.get(lang) or TRANSLATIONS['en']
+        mode = theme_mode()
         if relayout_data and isinstance(relayout_data, dict) and any(key.startswith(('xaxis', 'yaxis')) for key in relayout_data):
             stored_relayout = relayout_data
 
-        conn = sqlite3.connect(DB_FILE)
-        try:
-            cursor = conn.cursor()
-            device_filter = int(device_sel) if device_sel else None
-            columns = ['timestamp', 'temperature', 'humidity', 'dewpoint', 'absolute_humidity', 'device_id']
-            start = None if time_range_minutes == -1 else int((datetime.now() - timedelta(minutes=time_range_minutes)).timestamp())
-            query, _ = build_union_query(cursor, columns, start_timestamp=start, device_id=device_filter)
-            df = pd.read_sql_query(query, conn) if query else pd.DataFrame(columns=columns)
-        finally:
-            conn.close()
-
+        device_filter = int(device_sel) if device_sel else None
+        df, _ = graph_data(time_range_minutes, device_filter)
         names = {d['id']: d['name'] for d in devices.list_devices() if not device_filter or d['id'] == device_filter}
-        count_text = f"{len(df)} {t['measurements']} · {t[METRIC_KEYS[metric]]}"
+        count_text = f"{int(df['n'].sum())} {t['measurements']} · {t[METRIC_KEYS[metric]]}"
         if df.empty:
             fig = style_figure(go.Figure(), mode)
             fig.add_annotation(text=t['no_data'], showarrow=False, font=dict(color=THEMES[mode]['muted'], size=14),
@@ -306,7 +293,7 @@ def register_callbacks(app):
             fig.update_yaxes(visible=False)
             return fig, count_text, stored_relayout
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s').dt.tz_localize('UTC').dt.tz_convert(settings.get('timezone')).dt.tz_localize(None)
-        fig = metric_figure(df, names, device_colors(mode), metric, time_range_minutes, t, mode)
+        fig = metric_figure(df, names, device_colors(mode), metric, t, mode)
         return fig, count_text, stored_relayout
 
     # Callback voor psychrometric chart
@@ -318,6 +305,8 @@ def register_callbacks(app):
     )
     def update_psychrometric_chart(n, lang, device_sel):
         """Update psychrometrisch diagram met actuele meetwaarden (alle devices of één device)"""
+        if not settings.get('show_mollier'):
+            return no_update
         if lang is None:
             lang = 'nl'
         
@@ -686,9 +675,11 @@ def register_callbacks(app):
         return html.Img(src=src, className='spark', alt='') if src else None
 
     def render_board(states, colors, t):
+        show_comfort = settings.get('show_comfort')
         head = html.Tr([html.Th('', className='bar'), html.Th(t['hdr_sensor']), html.Th(t['temperature']), html.Th(t['humidity']),
                         html.Th(t['dewpoint'], className='col-wide'), html.Th(t['abs_humidity'], className='col-wide'),
-                        html.Th(t['comfort'], className='col-wide'), html.Th(t['hdr_trend'], className='col-wide'),
+                        html.Th(t['comfort'], className='col-wide') if show_comfort else None,
+                        html.Th(t['hdr_trend'], className='col-wide'),
                         html.Th(t['hdr_status'], className='col-status')])
         rows = []
         for s_ in states:
@@ -704,7 +695,7 @@ def register_callbacks(app):
                 html.Td(value_cell(s_['hum'], '%', ph.get('humidity'))),
                 html.Td(value_cell(s_['dew'], '°C', ph.get('dewpoint')), className='col-wide'),
                 html.Td(value_cell(s_['ah'], 'g/m³', ph.get('absolute_humidity')), className='col-wide'),
-                html.Td(s_['comfort'], className='comfort col-wide'),
+                html.Td(s_['comfort'], className='comfort col-wide') if show_comfort else None,
                 html.Td(spark(s_['id'], color), className='col-wide'),
                 html.Td([html.Span(s_['label'], className=f"st st-{s_['status']}"),
                          html.Span(s_['sub'], className='st-sub')], className='col-status'),

@@ -13,7 +13,7 @@ HTML_TEMPLATE = '''
         {%favicon%}
         {%css%}
         <style>
-            .theme-dark {
+            .theme-dark, .theme-dark .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner table {
                 --bg: #1b1f23; --panel: #24292e; --panel-2: #1f2428; --line: #343a41; --line-strong: #4a525a;
                 --text: #e6e8e3; --muted: #a2a9a2; --cell: #141a17; --digit: #d4ecc9;
                 --accent: #6aa8e8; --accent-ink: #0f1a26; --hover: #2c3238;
@@ -21,7 +21,7 @@ HTML_TEMPLATE = '''
                 --alarm-cell: #3a1d1b; --warn-cell: #33291a;
                 color-scheme: dark;
             }
-            .theme-light {
+            .theme-light, .theme-light .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner table {
                 --bg: #e8e9e4; --panel: #f7f7f3; --panel-2: #fbfbf8; --line: #cdd0c9; --line-strong: #a9ada5;
                 --text: #1b1f23; --muted: #555c55; --cell: #dde5d6; --digit: #1e2a1b;
                 --accent: #1f5fa8; --accent-ink: #ffffff; --hover: #eceee8;
@@ -29,6 +29,8 @@ HTML_TEMPLATE = '''
                 --alarm-cell: #f6dcd9; --warn-cell: #f6ead0;
                 color-scheme: light;
             }
+            /* De DataTable zet eigen --accent/--hover/--muted op zijn tabel (roze focus, witte opties): thema-tokens
+               hierboven daarom ook op die tabel. */
             :root { --sans: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell, "Noto Sans", sans-serif;
                     --mono: ui-monospace, "DejaVu Sans Mono", "Cascadia Mono", Menlo, Consolas, monospace; }
             html, body { margin: 0; }
@@ -215,6 +217,9 @@ HTML_TEMPLATE = '''
                 .board .col-status { display: none; } .st.st-inline { display: inline-flex; }
                 .tabs label { padding: 10px 9px 8px; }
                 .settings { padding: 14px; }
+                .settings .dash-spreadsheet-container { overflow-x: auto; }
+                /* Scrollende tabel knipt een open keuzelijst af: zolang die open is ruimte eronder maken */
+                .settings .dash-spreadsheet-container:has(.Select.is-open) { padding-bottom: 210px; }
             }
         </style>
     </head>
@@ -248,7 +253,12 @@ def view_options(t):
 
 
 def metric_options(t):
-    return [{'label': t[METRIC_LABEL_KEYS[m]], 'value': m} for m in METRICS]
+    return [{'label': t[METRIC_LABEL_KEYS[m]], 'value': m} for m in METRICS
+            if m != 'comfort' or settings.get('show_comfort')]
+
+
+def mollier_style():
+    return {} if settings.get('show_mollier') else {'display': 'none'}
 
 
 def range_options(t):
@@ -300,7 +310,7 @@ def create_layout():
                 html.Div(id='data-count', className='panel-foot'),
             ]),
 
-            html.Section(className='panel', children=[
+            html.Section(id='mollier-panel', className='panel', style=mollier_style(), children=[
                 html.Div(className='panel-head', children=[
                     html.Span(id='label-psychrometric-chart', className='panel-title', children=t['psychrometric_chart']),
                 ]),
