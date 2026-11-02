@@ -1226,6 +1226,51 @@ def test_mqtt_publishes_only_new_measurements():
     assert publisher.client.messages == []
 
 
+def test_mqtt_home_assistant_discovery():
+    import json
+    fresh_settings()
+    assert settings.save({'mqtt_ha_discovery': True}) == {}
+    mqtt_publisher._latest.clear()
+    devices.save_config([bus()], [device('Kas noord')])
+    kas_id = devices.load_config()[1][0]['id']
+    values = {'temperature': 18.0, 'humidity': 62.0, 'dewpoint': 11.1, 'absolute_humidity': 9.9, 'wood_emc': 12.0}
+    mqtt_publisher.store({'id': kas_id, 'name': 'Kas noord'}, values)
+    publisher = mqtt_publisher.Publisher()
+    publisher.client = FakeMqttClient()
+    config = {'mqtt_topic_prefix': 'fabriek/hal1', 'mqtt_qos': 0, 'mqtt_retain': False}
+    publisher.publish(config)
+    topics = {m[0]: m for m in publisher.client.messages}
+    base = f'homeassistant/sensor/fabriek-hal1-{kas_id}'
+    assert sorted(t for t in topics if t.startswith('homeassistant/')) == sorted(f'{base}/{m}/config' for m in values)
+    temp = json.loads(topics[f'{base}/temperature/config'][1])
+    assert topics[f'{base}/temperature/config'][3] is True                     # config altijd retained
+    assert temp['device']['name'] == 'Kas noord' and temp['device']['manufacturer'] == 'BRDC'
+    assert temp['device']['identifiers'] == [f'fabriek-hal1-{kas_id}']
+    assert temp['unique_id'] == f'fabriek-hal1-{kas_id}-temperature'
+    assert temp['state_topic'] == 'fabriek/hal1/kas-noord/state'
+    assert temp['value_template'] == '{{ value_json.temperature }}'
+    assert temp['availability_topic'] == 'fabriek/hal1/status'
+    assert (temp['device_class'], temp['unit_of_measurement'], temp['state_class']) == ('temperature', '°C', 'measurement')
+    assert json.loads(topics[f'{base}/humidity/config'][1])['device_class'] == 'humidity'
+
+    publisher.client.messages.clear()                        # ongewijzigd: geen nieuwe config
+    mqtt_publisher.store({'id': kas_id, 'name': 'Kas noord'}, values)
+    publisher.publish(config)
+    assert not [m for m in publisher.client.messages if m[0].startswith('homeassistant/')]
+
+    publisher.client.messages.clear()                        # houtvocht uit: die entity verdwijnt
+    mqtt_publisher.store({'id': kas_id, 'name': 'Kas noord'}, {'temperature': 18.0, 'humidity': 62.0})
+    publisher.publish(config)
+    removed = {m[0] for m in publisher.client.messages if m[1] == ''}
+    assert removed == {f'{base}/{m}/config' for m in ('dewpoint', 'absolute_humidity', 'wood_emc')}
+
+    publisher.client.messages.clear()                        # discovery uit: alles weg
+    settings.save({'mqtt_ha_discovery': False})
+    publisher.publish(config)
+    assert {m[0] for m in publisher.client.messages if m[1] == ''} == \
+        {f'{base}/temperature/config', f'{base}/humidity/config'}
+
+
 def test_mqtt_forgets_deleted_sensors():
     fresh_settings()
     mqtt_publisher._latest.clear()
