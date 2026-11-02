@@ -330,7 +330,7 @@ Open the **Settings** tab in the web app. The first visit asks you to create an 
 | Section | Settings |
 |---------|----------|
 | Display | Dashboard view (Board / Meters), theme (Dark / Light), show or hide comfort, the Mollier diagram and wood moisture |
-| Modbus buses and sensors | Poll interval, buses (RS-485 interfaces), sensors (Modbus slaves) with a temperature and humidity correction for calibration |
+| Modbus buses and sensors | Poll interval, buses (RS-485 interfaces), sensors (Modbus slaves) with data type (int16, uint16, int32, uint32, float32), byte order (ABCD, DCBA, BADC, CDAB) and a temperature and humidity correction for calibration |
 | Notifications: channels | Telegram bot token and chat ID, SMTP server, sender and recipients, test buttons |
 | MQTT | Broker, port, TLS, login, client ID, topic prefix, publish interval, QoS, retain, test button |
 | Notifications: limits | Limits per quantity (all sensors or one sensor) at warning or alarm level, alarm delay, hysteresis, recovery and offline alerts |

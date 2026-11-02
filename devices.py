@@ -42,6 +42,10 @@ DEVICE_FIELDS = {
     # Kalibratie: opgeteld bij de gemeten waarde (leeg = 0)
     'offset_temp': {'type': float, 'default': 0.0, 'min': -20, 'max': 20, 'blank_default': True},
     'offset_humidity': {'type': float, 'default': 0.0, 'min': -30, 'max': 30, 'blank_default': True},
+    # Registerformaat (decodering in modbus_reader.decode); XY-MD02 = int16, ABCD
+    'data_type': {'type': str, 'default': 'int16', 'choices': ['int16', 'uint16', 'int32', 'uint32', 'float32'],
+                  'blank_default': True},
+    'byte_order': {'type': str, 'default': 'ABCD', 'choices': ['ABCD', 'DCBA', 'BADC', 'CDAB'], 'blank_default': True},
     'enabled': {'type': bool, 'default': True},
 }
 
@@ -67,11 +71,15 @@ def _connect():
         slave_id INTEGER NOT NULL, function_code INTEGER NOT NULL, register_temp INTEGER NOT NULL,
         register_humidity INTEGER NOT NULL, scale_temp REAL NOT NULL, scale_humidity REAL NOT NULL,
         offset_temp REAL NOT NULL DEFAULT 0, offset_humidity REAL NOT NULL DEFAULT 0,
+        data_type TEXT NOT NULL DEFAULT 'int16', byte_order TEXT NOT NULL DEFAULT 'ABCD',
         enabled INTEGER NOT NULL, UNIQUE (bus_id, slave_id))''')
     columns = [row[1] for row in conn.execute('PRAGMA table_info(devices)')]
-    for column in ('offset_temp', 'offset_humidity'):   # tabel van vóór de kalibratie
+    # Tabellen van vóór de kalibratie en het registerformaat: kolommen met de oude vaste waarden erbij
+    for column, definition in (('offset_temp', 'REAL NOT NULL DEFAULT 0'), ('offset_humidity', 'REAL NOT NULL DEFAULT 0'),
+                               ('data_type', "TEXT NOT NULL DEFAULT 'int16'"),
+                               ('byte_order', "TEXT NOT NULL DEFAULT 'ABCD'")):
         if column not in columns:
-            conn.execute(f'ALTER TABLE devices ADD COLUMN {column} REAL NOT NULL DEFAULT 0')
+            conn.execute(f'ALTER TABLE devices ADD COLUMN {column} {definition}')
     return conn
 
 

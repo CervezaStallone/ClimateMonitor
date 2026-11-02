@@ -9,6 +9,7 @@
 """
 import math
 import queue
+import struct
 import sqlite3
 import threading
 import time
@@ -51,10 +52,31 @@ def derived_values(temperature, humidity):
     return dewpoint, absolute_humidity
 
 
+# Datatype -> (struct formaat, aantal registers). Byte-volgorde: letters = bytes van hoog naar laag zoals
+# ze op de bus staan (ABCD = big endian, DCBA = little endian, BADC = bytes per woord gewisseld, CDAB = woorden gewisseld)
+DATA_TYPES = {'int16': ('h', 1), 'uint16': ('H', 1), 'int32': ('i', 2), 'uint32': ('I', 2), 'float32': ('f', 2)}
+BYTE_ORDERS = {'ABCD': (0, 1, 2, 3), 'DCBA': (3, 2, 1, 0), 'BADC': (1, 0, 3, 2), 'CDAB': (2, 3, 0, 1)}
+
+
+def decode(registers, data_type, byte_order):
+    """Registers (16-bit, zoals ontvangen) naar een getal volgens datatype en byte-volgorde."""
+    raw = b''.join((r & 0xFFFF).to_bytes(2, 'big') for r in registers)
+    order = BYTE_ORDERS[byte_order]
+    if len(raw) == 2:   # één register: alleen de bytevolgorde binnen het woord telt
+        order = (1, 0) if byte_order in ('DCBA', 'BADC') else (0, 1)
+    return struct.unpack('>' + DATA_TYPES[data_type][0], bytes(raw[i] for i in order))[0]
+
+
+def read_value(instrument, device, register):
+    data_type = device.get('data_type', 'int16')
+    registers = instrument.read_registers(register, DATA_TYPES[data_type][1], device['function_code'])
+    return decode(registers, data_type, device.get('byte_order', 'ABCD'))
+
+
 def read_device(instrument, device):
-    """Lees temperatuur en luchtvochtigheid (signed registers × schaal)."""
-    raw_temp = instrument.read_register(device['register_temp'], 0, device['function_code'], signed=True)
-    raw_humidity = instrument.read_register(device['register_humidity'], 0, device['function_code'], signed=True)
+    """Lees temperatuur en luchtvochtigheid (registers volgens datatype en byte-volgorde × schaal)."""
+    raw_temp = read_value(instrument, device, device['register_temp'])
+    raw_humidity = read_value(instrument, device, device['register_humidity'])
     # Kalibratie per sensor. Alleen een geldige meting (0-100 %) wordt na de correctie begrensd: een sensor op
     # 99 % + 3 is geen meetfout, een ruwe -5 % wel (die moet als 'out of range' geweigerd worden, niet 0 % worden)
     temperature = raw_temp * device['scale_temp'] + device.get('offset_temp', 0)

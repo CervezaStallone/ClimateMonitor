@@ -389,6 +389,26 @@ class FakeInstrument:
             raise minimalmodbus.NoResponseError('No communication with the instrument (no answer)')
         return self.registers[register]
 
+    def read_registers(self, register, count, functioncode):
+        if self.fail:
+            raise minimalmodbus.NoResponseError('No communication with the instrument (no answer)')
+        return [self.registers[register + i] & 0xFFFF for i in range(count)]
+
+
+def test_poller_decodes_data_type_and_byte_order():
+    """32-bit float met verwisselde woorden (CDAB) en 16-bit unsigned met verwisselde bytes (DCBA)."""
+    fresh_settings()
+    q = queue.Queue()
+    dev = {**device('Float', register_temp=1, register_humidity=3, scale_temp=1, scale_humidity=1,
+                    data_type='float32', byte_order='CDAB'), 'id': 1}
+    poller = modbus_reader.BusPoller({**bus(), 'id': 1}, [dev], q)
+    poller.poll(FakeInstrument({1: 0x0000, 2: 0x41AC, 3: 0x0000, 4: 0x425D}), dev)   # 21.5 °C, 55.25 %
+    assert q.get_nowait()[1:3] == (21.5, 55.25)
+    dev = {**device('Swap', data_type='uint16', byte_order='DCBA'), 'id': 1}
+    poller.poll(FakeInstrument({1: 0x2C01, 2: 0x2602}), dev)                         # 0x012C = 30.0, 0x0226 = 55.0
+    assert q.get_nowait()[1:3] == (30.0, 55.0)
+    assert devices.validate_config([bus()], [device(data_type='int64')])[2] == {'devices': {0: {'data_type': 'err_choice'}}}
+
 
 def test_poller_reads_signed_scaled_values_and_isolates_failures():
     fresh_settings()
@@ -517,6 +537,18 @@ def test_config_forms_round_trip():
     assert rows['devices'][0]['id'] == names['Koelcel']['id']
     assert devices.validate_config(rows['buses'], rows['devices'])[2] == {}
     assert alerts.validate_rules(rows['rules'])[1] == {} and rows['rules'][0]['level'] == 'warning'
+
+
+def test_sensor_form_has_data_type_and_byte_order():
+    import settings_ui
+    from dash import html
+    setup_alerts([])
+    form = html.Div(settings_ui.row_form('devices', settings_ui.table_rows('devices'), TRANSLATIONS['nl']))
+    fields = {c.id['field']: c for c in components(form)
+              if isinstance(getattr(c, 'id', None), dict) and c.id.get('type') == 'cfg' and c.id['row'] == 0}
+    assert fields['data_type'].value == 'int16' and fields['byte_order'].value == 'ABCD'
+    assert [o['value'] for o in fields['data_type'].options] == devices.DEVICE_FIELDS['data_type']['choices']
+    assert [o['value'] for o in fields['byte_order'].options] == devices.DEVICE_FIELDS['byte_order']['choices']
 
 
 def test_tab_and_url_stay_in_sync():

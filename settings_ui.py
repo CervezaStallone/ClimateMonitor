@@ -18,11 +18,13 @@ SECTIONS = ['display', 'modbus', 'notify', 'alerts', 'wood', 'mqtt', 'regional',
 # Bussen, sensoren en grenswaarden: één regel gewone formuliervelden per item (geen DataTable: daar verplaatsen
 # de pijltjestoetsen de cel in plaats van de cursor en zijn de keuzelijsten in cellen onbetrouwbaar)
 BUS_COLUMNS = ['name', 'port', 'baudrate', 'bytesize', 'parity', 'stopbits', 'timeout', 'enabled']
-DEVICE_COLUMNS = ['name', 'bus', 'slave_id', 'function_code', 'register_temp', 'register_humidity',
-                  'scale_temp', 'scale_humidity', 'offset_temp', 'offset_humidity', 'enabled']
+DEVICE_COLUMNS = ['name', 'bus', 'slave_id', 'function_code', 'register_temp', 'register_humidity', 'data_type',
+                  'byte_order', 'scale_temp', 'scale_humidity', 'offset_temp', 'offset_humidity', 'enabled']
+BYTE_ORDER_LABELS = {'ABCD': 'ABCD · big endian', 'DCBA': 'DCBA · little endian', 'BADC': 'BADC · byte swap',
+                     'CDAB': 'CDAB · word swap'}
 RULE_COLUMNS = ['scope', 'metric', 'level', 'min_value', 'max_value', 'enabled']
 TABLE_COLUMNS = {'buses': BUS_COLUMNS, 'devices': DEVICE_COLUMNS, 'rules': RULE_COLUMNS}
-WIDE_FIELDS = {'name', 'port', 'bus', 'scope', 'metric'}   # twee kolommen breed
+WIDE_FIELDS = {'name', 'port', 'bus', 'scope', 'metric', 'byte_order'}   # twee kolommen breed
 
 _TIMEZONES = sorted(available_timezones())
 
@@ -104,6 +106,10 @@ def _choices(table, field, t, bus_names):
         return [{'label': str(v), 'value': v} for v in plain[field]]
     if field == 'bus':
         return [{'label': n, 'value': n} for n in bus_names]
+    if field == 'data_type':
+        return [{'label': v, 'value': v} for v in devices.DEVICE_FIELDS['data_type']['choices']]
+    if field == 'byte_order':
+        return [{'label': BYTE_ORDER_LABELS[v], 'value': v} for v in devices.DEVICE_FIELDS['byte_order']['choices']]
     if field == 'function_code':
         return [{'label': t[f'opt_function_code_{v}'], 'value': v} for v in (4, 3)]
     if field == 'scope':
@@ -173,8 +179,8 @@ def _new_row(table, rows, bus_names):
         used = {r.get('slave_id') for r in rows if r.get('bus') == bus_name}
         return {'id': None, 'name': f'Sensor {len(rows) + 1}', 'bus': bus_name,
                 'slave_id': next(i for i in range(1, 248) if i not in used), 'function_code': 4, 'register_temp': 1,
-                'register_humidity': 2, 'scale_temp': 0.1, 'scale_humidity': 0.1, 'offset_temp': 0,
-                'offset_humidity': 0, 'enabled': 'true'}
+                'register_humidity': 2, 'data_type': 'int16', 'byte_order': 'ABCD', 'scale_temp': 0.1,
+                'scale_humidity': 0.1, 'offset_temp': 0, 'offset_humidity': 0, 'enabled': 'true'}
     return {'id': None, 'scope': 0, 'metric': 'temperature', 'level': 'alarm', 'min_value': None, 'max_value': None,
             'enabled': 'true'}
 
