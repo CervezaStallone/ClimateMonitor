@@ -13,11 +13,11 @@ import mqtt_publisher
 import settings
 from translations import LANGUAGE_NAMES, TRANSLATIONS
 
-SECTIONS = ['display', 'modbus', 'notify', 'alerts', 'mqtt', 'regional', 'data', 'server', 'security']
+SECTIONS = ['display', 'modbus', 'notify', 'alerts', 'wood', 'mqtt', 'regional', 'data', 'server', 'security']
 
 BUS_COLUMNS = ['name', 'port', 'baudrate', 'bytesize', 'parity', 'stopbits', 'timeout', 'enabled']
 DEVICE_COLUMNS = ['id', 'name', 'bus', 'slave_id', 'function_code', 'register_temp', 'register_humidity',
-                  'scale_temp', 'scale_humidity', 'enabled']
+                  'scale_temp', 'scale_humidity', 'offset_temp', 'offset_humidity', 'enabled']
 
 _TIMEZONES = sorted(available_timezones())
 
@@ -95,7 +95,7 @@ def _device_table(device_rows, bus_names, t):
         id='device-table',
         columns=[{'id': c, 'name': t[f'col_{c}'], 'editable': c != 'id',
                   'presentation': 'dropdown' if c in ('bus', 'function_code', 'enabled') else 'input',
-                  'type': 'numeric' if c.startswith(('slave', 'register', 'scale')) else 'any'} for c in DEVICE_COLUMNS],
+                  'type': 'numeric' if c.startswith(('slave', 'register', 'scale', 'offset')) else 'any'} for c in DEVICE_COLUMNS],
         data=_table_rows(device_rows, DEVICE_COLUMNS),
         editable=True, row_deletable=True,
         dropdown={'bus': {'options': [{'label': n, 'value': n} for n in bus_names], 'clearable': False},
@@ -173,7 +173,7 @@ def mqtt_status_text(t):
 
 
 def _rule_rows():
-    return [{'scope': r['device_id'] or 0, 'metric': r['metric'], 'min_value': r['min_value'],
+    return [{'scope': r['device_id'] or 0, 'metric': r['metric'], 'level': r['level'], 'min_value': r['min_value'],
              'max_value': r['max_value'], 'enabled': 'true' if r['enabled'] else 'false'} for r in alerts.load_rules()]
 
 
@@ -188,12 +188,15 @@ def _alerts_section(t):
             id='alert-rule-table',
             columns=[{'id': 'scope', 'name': t['col_scope'], 'presentation': 'dropdown'},
                      {'id': 'metric', 'name': t['col_metric'], 'presentation': 'dropdown'},
+                     {'id': 'level', 'name': t['col_level'], 'presentation': 'dropdown'},
                      {'id': 'min_value', 'name': t['col_min_value'], 'type': 'numeric'},
                      {'id': 'max_value', 'name': t['col_max_value'], 'type': 'numeric'},
                      {'id': 'enabled', 'name': t['col_enabled'], 'presentation': 'dropdown'}],
             data=_rule_rows(), editable=True, row_deletable=True,
             dropdown={'scope': {'options': scopes, 'clearable': False},
                       'metric': {'options': metrics, 'clearable': False},
+                      'level': {'options': [{'label': t[f'opt_level_{v}'], 'value': v} for v in alerts.LEVELS],
+                                'clearable': False},
                       'enabled': {'options': _yes_no(t), 'clearable': False}},
             **TABLE_STYLE),
         html.Button(t['btn_add_rule'], id='add-rule', n_clicks=0, className='btn btn-small'),
@@ -423,7 +426,7 @@ def register_settings_callbacks(app):
         slave_id = next(i for i in range(1, 248) if i not in used)
         return rows + [{'id': None, 'name': f'Sensor {len(rows) + 1}', 'bus': bus_name, 'slave_id': slave_id,
                         'function_code': 4, 'register_temp': 1, 'register_humidity': 2, 'scale_temp': 0.1,
-                        'scale_humidity': 0.1, 'enabled': 'true'}]
+                        'scale_humidity': 0.1, 'offset_temp': 0, 'offset_humidity': 0, 'enabled': 'true'}]
 
     @app.callback(
         Output('device-table', 'dropdown'),
@@ -459,8 +462,8 @@ def register_settings_callbacks(app):
     def add_rule(n_clicks, rows):
         if not auth.is_logged_in():
             return no_update
-        return (rows or []) + [{'scope': 0, 'metric': 'temperature', 'min_value': None, 'max_value': None,
-                                'enabled': 'true'}]
+        return (rows or []) + [{'scope': 0, 'metric': 'temperature', 'level': 'alarm', 'min_value': None,
+                                'max_value': None, 'enabled': 'true'}]
 
     @app.callback(
         Output('test-status', 'children'),
@@ -537,19 +540,20 @@ def register_settings_callbacks(app):
          Output('view-toggle', 'value'),
          Output('metric-tabs', 'options', allow_duplicate=True),
          Output('metric-tabs', 'value'),
-         Output('mollier-panel', 'style')],
+         Output('mollier-panel', 'style'),
+         Output('wood-panel', 'style')],
         Input('settings-status', 'children'),
         [State('selected-language', 'data'),
          State('metric-tabs', 'value')],
         prevent_initial_call=True
     )
     def apply_saved_display(status, lang, metric):
-        """Na opslaan thema, weergave, comfort en Mollier diagram direct toepassen"""
+        """Na opslaan thema, weergave, comfort, Mollier en houtvocht direct toepassen"""
         options = layout.metric_options(_t(lang))
         if metric not in [o['value'] for o in options]:
             metric = 'temperature'
         return (f"theme-{settings.get('dashboard_theme')}", settings.get('dashboard_view'), options, metric,
-                layout.mollier_style())
+                layout.mollier_style(), layout.wood_style())
 
     @app.callback(
         [Output('pw-status', 'children'),

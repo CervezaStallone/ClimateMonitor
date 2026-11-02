@@ -31,6 +31,11 @@ SCHEMA = {
     'dashboard_theme': {'type': str, 'default': 'dark', 'section': 'display', 'choices': ['dark', 'light']},
     'show_comfort': {'type': bool, 'default': True, 'section': 'display'},
     'show_mollier': {'type': bool, 'default': True, 'section': 'display'},
+    'show_wood': {'type': bool, 'default': False, 'section': 'display'},
+    # Houtvocht (wood.py): correctie voor houtsoort of eigen ijking
+    'wood_emc_offset': {'type': float, 'default': 0.0, 'section': 'wood', 'min': -5, 'max': 5},
+    'wood_response_hours': {'type': int, 'default': 24, 'section': 'wood', 'min': 0, 'max': 720},
+    'alert_hysteresis_wood': {'type': float, 'default': 0.5, 'section': 'wood', 'min': 0, 'max': 10},
     'poll_interval_seconds': {'type': int, 'default': 1, 'section': 'modbus', 'min': 1, 'max': 3600},
     'data_retention_days': {'type': int, 'default': 0, 'env': 'DATA_RETENTION_DAYS', 'section': 'data',
                             'min': 0, 'max': 3650},

@@ -30,14 +30,16 @@ METRICS = {  # grootheid -> (vertaalsleutel, eenheid, hysterese instelling)
     'humidity': ('humidity', '%', 'alert_hysteresis_humidity'),
     'dewpoint': ('dewpoint', '°C', 'alert_hysteresis_temp'),
     'absolute_humidity': ('abs_humidity', 'g/m³', 'alert_hysteresis_humidity'),
+    'wood_emc': ('wood_emc', '%', 'alert_hysteresis_wood'),   # vertraagd houtvocht, zie wood.py
 }
+LEVELS = ['alarm', 'warning']   # waarschuwing = eigen melding, geel in het dashboard
 
 MAX_RETRY_DELAY = 3600
 SEND_TIMEOUT = 15
 
 _lock = threading.Lock()
 _rules_cache = None           # [regel dicts], None = opnieuw laden
-_state = {}                   # (device_id, metric) -> {'phase', 'since', 'kind', 'limit'}
+_state = {}                   # (device_id, metric, level) -> {'phase', 'since', 'kind', 'limit'}
 _offline = set()              # device ids waarvoor een offline melding is verstuurd
 _first_seen = {}              # device id -> eerste keer gezien door de offline controle (nieuwe sensoren)
 _outbox = queue.Queue()
@@ -53,7 +55,9 @@ def _connect():
     conn = sqlite3.connect(DB_FILE, timeout=30)
     conn.execute('''CREATE TABLE IF NOT EXISTS alert_rules (
         id INTEGER PRIMARY KEY AUTOINCREMENT, device_id INTEGER, metric TEXT NOT NULL,
-        min_value REAL, max_value REAL, enabled INTEGER NOT NULL)''')
+        min_value REAL, max_value REAL, enabled INTEGER NOT NULL, level TEXT NOT NULL DEFAULT 'alarm')''')
+    if 'level' not in [row[1] for row in conn.execute('PRAGMA table_info(alert_rules)')]:   # tabel van vóór niveaus
+        conn.execute("ALTER TABLE alert_rules ADD COLUMN level TEXT NOT NULL DEFAULT 'alarm'")
     return conn
 
 
@@ -79,6 +83,9 @@ def validate_rules(rows):
         metric = row.get('metric')
         if metric not in METRICS:
             row_errors['metric'] = 'err_choice'
+        level = row.get('level') or 'alarm'
+        if level not in LEVELS:
+            row_errors['level'] = 'err_choice'
         values = {}
         for field in ('min_value', 'max_value'):
             try:
@@ -91,12 +98,12 @@ def validate_rules(rows):
             elif values['min_value'] is not None and values['max_value'] is not None \
                     and values['min_value'] >= values['max_value']:
                 row_errors['max_value'] = 'err_min_max'
-            elif (scope, metric) in seen:
+            elif (scope, metric, level) in seen:
                 row_errors['metric'] = 'err_duplicate'
-            seen.add((scope, metric))
+            seen.add((scope, metric, level))
         if row_errors:
             errors[index] = row_errors
-        clean.append({'device_id': scope or None, 'metric': metric, **values,
+        clean.append({'device_id': scope or None, 'metric': metric, 'level': level, **values,
                       'enabled': str(row.get('enabled', 'true')).lower() in ('true', '1')})
     return clean, errors
 
@@ -112,8 +119,10 @@ def save_rules(rows):
         try:
             conn.execute('BEGIN')
             conn.execute('DELETE FROM alert_rules')
-            conn.executemany('INSERT INTO alert_rules (device_id, metric, min_value, max_value, enabled) VALUES (?, ?, ?, ?, ?)',
-                             [(r['device_id'], r['metric'], r['min_value'], r['max_value'], int(r['enabled'])) for r in clean])
+            conn.executemany('INSERT INTO alert_rules (device_id, metric, level, min_value, max_value, enabled) '
+                             'VALUES (?, ?, ?, ?, ?, ?)',
+                             [(r['device_id'], r['metric'], r['level'], r['min_value'], r['max_value'], int(r['enabled']))
+                              for r in clean])
             conn.commit()
         finally:
             conn.close()
@@ -140,17 +149,18 @@ def load_rules():
 
 
 def effective_rules(device_id):
-    """{grootheid: regel} voor één sensor: sensorregel vervangt globale regel."""
+    """{(grootheid, niveau): regel} voor één sensor: sensorregel vervangt globale regel van hetzelfde niveau."""
     rules = {}
     for rule in load_rules():
         if rule['enabled'] and rule['device_id'] is None:
-            rules.setdefault(rule['metric'], rule)
+            rules.setdefault((rule['metric'], rule['level']), rule)
     for rule in load_rules():
         if rule['device_id'] == device_id:
+            key = (rule['metric'], rule['level'])
             if rule['enabled']:
-                rules[rule['metric']] = rule
+                rules[key] = rule
             else:
-                rules.pop(rule['metric'], None)   # uitgeschakelde sensorregel = globale regel uit voor deze sensor
+                rules.pop(key, None)   # uitgeschakelde sensorregel = globale regel uit voor deze sensor
     return rules
 
 
@@ -170,15 +180,15 @@ def evaluate(device, values, now=None):
         now = now or time.time()
         _check_online(device, now)
         delay = settings.get('alert_delay_seconds')
-        for metric, rule in effective_rules(device['id']).items():
+        for (metric, level), rule in effective_rules(device['id']).items():
             if metric in values:
-                _evaluate_metric(device, metric, values[metric], rule, delay, now)
+                _evaluate_metric(device, metric, level, values[metric], rule, delay, now)
     except Exception as e:
         print(f"Alarm evaluatie fout ({device.get('name')}): {e}")
 
 
-def _evaluate_metric(device, metric, value, rule, delay, now):
-    key = (device['id'], metric)
+def _evaluate_metric(device, metric, level, value, rule, delay, now):
+    key = (device['id'], metric, level)
     state = _state.setdefault(key, {'phase': 'normal'})
     hysteresis = settings.get(METRICS[metric][2])
     if rule['max_value'] is not None and value > rule['max_value']:
@@ -203,7 +213,8 @@ def _evaluate_metric(device, metric, value, rule, delay, now):
         _state[key] = state = {'phase': 'pending', 'since': now, 'kind': breach[0], 'limit': breach[1]}
     if now - state['since'] >= delay:
         _state[key] = {'phase': 'alarm', 'kind': breach[0], 'limit': breach[1]}
-        _notify('alert_high' if breach[0] == 'high' else 'alert_low', device, metric, value, breach[1])
+        prefix = 'alert_warn_' if level == 'warning' else 'alert_'
+        _notify(prefix + breach[0], device, metric, value, breach[1])
 
 
 def _notify(template, device, metric, value, limit):
@@ -223,10 +234,13 @@ def _check_online(device, now):
 def device_status(device_id):
     """Alarmstatus van een sensor: ('alarm' | 'warn' | 'ok', {grootheid: fase}).
 
-    'warn' = grens overschreden maar de alarmvertraging loopt nog; 'alarm' = alarm actief.
+    Fase per grootheid: 'alarm' = alarm actief; 'pending' = alarmvertraging loopt of een
+    waarschuwing is actief. Het zwaarste niveau per grootheid telt.
     """
-    phases = {metric: state['phase'] for (dev, metric), state in list(_state.items())
-              if dev == device_id and state['phase'] != 'normal'}
+    phases = {}
+    for (dev, metric, level), state in list(_state.items()):
+        if dev == device_id and state['phase'] != 'normal' and phases.get(metric) != 'alarm':
+            phases[metric] = 'alarm' if state['phase'] == 'alarm' and level == 'alarm' else 'pending'
     if 'alarm' in phases.values():
         return 'alarm', phases
     if 'pending' in phases.values():

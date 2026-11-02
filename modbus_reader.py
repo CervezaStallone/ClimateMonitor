@@ -21,6 +21,7 @@ import alerts
 import devices
 import mqtt_publisher
 import settings
+import wood
 from database import DB_FILE, cleanup_old_data, ensure_table_exists, get_table_name
 
 PARITY_MAP = {
@@ -42,7 +43,9 @@ SUPERVISOR_INTERVAL = 2  # seconden
 
 def derived_values(temperature, humidity):
     """Bereken dauwpunt (°C) en absolute vochtigheid (g/m³)."""
-    dewpoint = temperature - ((100 - humidity) / 5.0)
+    # Magnus (Sonntag 1990); de oude vuistregel T - (100-RV)/5 week bij lage RV tot enkele graden af
+    gamma = math.log(max(humidity, 0.1) / 100) + 17.62 * temperature / (243.12 + temperature)
+    dewpoint = 243.12 * gamma / (17.62 - gamma)
     # Formule: AH = (6.112 × e^((17.67 × T)/(T+243.5)) × RH × 2.1674) / (273.15+T)
     absolute_humidity = (6.112 * math.exp((17.67 * temperature) / (temperature + 243.5)) * humidity * 2.1674) / (273.15 + temperature)
     return dewpoint, absolute_humidity
@@ -52,7 +55,10 @@ def read_device(instrument, device):
     """Lees temperatuur en luchtvochtigheid (signed registers × schaal)."""
     raw_temp = instrument.read_register(device['register_temp'], 0, device['function_code'], signed=True)
     raw_humidity = instrument.read_register(device['register_humidity'], 0, device['function_code'], signed=True)
-    return round(raw_temp * device['scale_temp'], 3), round(raw_humidity * device['scale_humidity'], 3)
+    # Kalibratie per sensor; RV na correctie binnen 0-100 % (een sensor op 99 % + 3 is geen meetfout)
+    temperature = raw_temp * device['scale_temp'] + device.get('offset_temp', 0)
+    humidity = min(max(raw_humidity * device['scale_humidity'] + device.get('offset_humidity', 0), 0), 100)
+    return round(temperature, 3), round(humidity, 3)
 
 
 def open_instrument(bus, device):
@@ -182,8 +188,9 @@ class BusPoller(threading.Thread):
         devices.report_ok(device['id'], temperature, humidity)
         values = {'temperature': temperature, 'humidity': humidity, 'dewpoint': dewpoint,
                   'absolute_humidity': absolute_humidity}
-        alerts.evaluate(device, values)
-        mqtt_publisher.store(device, values)
+        wood_emc = wood.update(device['id'], temperature, humidity)   # altijd: houtvochtregels werken ook als het verborgen is
+        alerts.evaluate(device, {**values, 'wood_emc': wood_emc})
+        mqtt_publisher.store(device, {**values, 'wood_emc': wood_emc} if settings.get('show_wood') else values)
         self.last_errors.pop(device['id'], None)
         if settings.get('debug_logging'):
             print(f"{datetime.now().strftime('%H:%M:%S')} - {device['name']}: {temperature:.1f}°C, {humidity:.1f}%")

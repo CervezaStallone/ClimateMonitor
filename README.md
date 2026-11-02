@@ -42,6 +42,7 @@ A real-time climate monitoring dashboard for Modbus RTU temperature and humidity
 - [Adding a New Language](#adding-a-new-language)
 - [Comfort Score & Humidex](#comfort-score--humidex)
 - [Mollier Diagram (Psychrometric Chart)](#mollier-diagram-psychrometric-chart)
+- [Wood Moisture (Equilibrium Moisture Content)](#wood-moisture-equilibrium-moisture-content)
 - [Historical Data Replay](#historical-data-replay)
 - [Database Architecture](#database-architecture)
 - [Testing](#testing)
@@ -64,6 +65,7 @@ A real-time climate monitoring dashboard for Modbus RTU temperature and humidity
   - Humidex (scientific comfort index)
   - Comfort Score (0-6, based on Humidex)
 - **Psychrometric chart**: Mollier diagram with live indicator and comfort zone visualization
+- **Wood moisture** (optional): equilibrium moisture content per sensor, a diagram with zones from your limits, warning and alarm levels
 - **Historical data replay**: Time-travel through data with preset buttons or custom date/time selection
 - **Interactive slider**: Live updates while dragging for smooth historical navigation
 - **Scientific analysis**: Humidex formula according to Environment Canada standard
@@ -272,6 +274,7 @@ ClimateMonitor/
 ├── alerts.py                   # Limits, alarm state, Telegram/e-mail notifications
 ├── mqtt_publisher.py           # MQTT publishing per sensor
 ├── psychrometric.py            # Mollier diagram generation
+├── wood.py                     # Wood equilibrium moisture: formula, response time, diagram
 ├── callbacks.py                # Dashboard callbacks (board/meters, chart, Mollier, replay)
 ├── settings.py                 # Settings stored in the database, validation, password reset
 ├── settings_ui.py              # Settings tab
@@ -326,11 +329,12 @@ Open the **Settings** tab in the web app. The first visit asks you to create an 
 
 | Section | Settings |
 |---------|----------|
-| Display | Dashboard view (Board / Meters), theme (Dark / Light), show or hide comfort and the Mollier diagram |
-| Modbus buses and sensors | Poll interval, buses (RS-485 interfaces), sensors (Modbus slaves) |
+| Display | Dashboard view (Board / Meters), theme (Dark / Light), show or hide comfort, the Mollier diagram and wood moisture |
+| Modbus buses and sensors | Poll interval, buses (RS-485 interfaces), sensors (Modbus slaves) with a temperature and humidity correction for calibration |
 | Notifications: channels | Telegram bot token and chat ID, SMTP server, sender and recipients, test buttons |
 | MQTT | Broker, port, TLS, login, client ID, topic prefix, publish interval, QoS, retain, test button |
-| Notifications: limits | Limits per quantity (all sensors or one sensor), alarm delay, hysteresis, recovery and offline alerts |
+| Notifications: limits | Limits per quantity (all sensors or one sensor) at warning or alarm level, alarm delay, hysteresis, recovery and offline alerts |
+| Wood moisture | Correction for the wood species (% points), response time of the wood (hours), hysteresis |
 | Region and language | Timezone, default language |
 | Data | Data retention (days, 0 = forever), debug logging |
 | Server | Listen address and port (*restart required*) |
@@ -404,7 +408,7 @@ saving. With topic prefix `xy-md02` every sensor publishes, at most once per pub
 |-------|---------|
 | `xy-md02/status` | `online` / `offline` (retained, `offline` via last will) |
 | `xy-md02/<sensor>/state` | `{"device_id": 3, "name": "Kas noord", "temperature": 18.7, "humidity": 62.0, "dewpoint": 11.1, "absolute_humidity": 9.92, "timestamp": "2026-10-14T12:15:43+02:00"}` |
-| `xy-md02/<sensor>/temperature` (and `humidity`, `dewpoint`, `absolute_humidity`) | plain value, e.g. `18.7` |
+| `xy-md02/<sensor>/temperature` (and `humidity`, `dewpoint`, `absolute_humidity`, `wood_emc` when wood moisture is on) | plain value, e.g. `18.7` |
 
 `<sensor>` is the sensor name in lower case with `-` instead of spaces (`Kas noord` → `kas-noord`);
 renaming a sensor changes its topic, `device_id` stays the same. If the broker is unreachable,
@@ -506,6 +510,27 @@ The application displays an interactive **psychrometric chart** with:
 - **Zoom & Pan**: Full Plotly interactivity for detailed analysis
 
 This diagram helps to see at a glance whether the climate condition is within the comfort zone and how it relates to saturation limits.
+
+### Wood Moisture (Equilibrium Moisture Content)
+
+Turn on *Show wood moisture* in Settings > Display for storage rooms, workshops or drying rooms with wood.
+The app then calculates the **equilibrium moisture content** (EMC): the moisture content wood moves towards
+at the measured temperature and humidity, with the Hailwood-Horrobin formula from the USDA Wood Handbook
+(20 °C and 65 % RH gives 12 %).
+
+- **Board, meters and chart**: a *Wood moisture* value per sensor
+- **Diagram**: temperature × humidity with lines of equal wood moisture, the sensors as points and the
+  wood moisture limits from your alarm rules as coloured zones (yellow = warning, red = alarm)
+- **Alarms**: add rules for *Wood moisture*, e.g. a warning at a maximum of 18 % and an alarm at 20 %
+- **Response time** (default 24 h): wood follows the air slowly, so the board and the alarms use an average
+  over this time. An open door or a short peak does not trigger an alarm. After a restart the average is
+  taken from the database. Set it to 0 to use the live value.
+- **Correction**: the formula applies to average wood; according to the handbook the difference between
+  species is small. Tropical or thermally modified wood takes up less moisture: enter a negative correction,
+  or calibrate against a wood moisture meter.
+
+18 % wood moisture is about 85 % RH and 20 % about 89 % RH, so a few % RH sensor error matters here.
+Use the humidity correction per sensor (Settings > Modbus) to calibrate the sensors.
 
 ### Historical Data Replay
 

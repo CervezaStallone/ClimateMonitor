@@ -246,9 +246,10 @@ HTML_TEMPLATE = '''
 </html>
 '''
 
-METRICS = ['temperature', 'humidity', 'dewpoint', 'absolute_humidity', 'comfort']
+METRICS = ['temperature', 'humidity', 'dewpoint', 'absolute_humidity', 'comfort', 'wood_emc']
 METRIC_LABEL_KEYS = {'temperature': 'temperature', 'humidity': 'humidity', 'dewpoint': 'dewpoint',
-                     'absolute_humidity': 'abs_humidity', 'comfort': 'comfort'}
+                     'absolute_humidity': 'abs_humidity', 'comfort': 'comfort', 'wood_emc': 'wood_emc'}
+OPTIONAL_METRICS = {'comfort': 'show_comfort', 'wood_emc': 'show_wood'}   # grootheid -> aan/uit instelling
 TIME_RANGES = [('last_1min', 1), ('last_5min', 5), ('last_15min', 15), ('last_30min', 30), ('last_1hour', 60),
                ('last_6hours', 360), ('last_12hours', 720), ('last_24hours', 1440), ('last_7days', 10080),
                ('last_14days', 20160), ('last_1month', 43200), ('last_3months', 129600),
@@ -266,7 +267,7 @@ def view_options(t):
 
 def metric_options(t):
     return [{'label': t[METRIC_LABEL_KEYS[m]], 'value': m} for m in METRICS
-            if m != 'comfort' or settings.get('show_comfort')]
+            if m not in OPTIONAL_METRICS or settings.get(OPTIONAL_METRICS[m])]
 
 
 def device_options(t):
@@ -277,6 +278,10 @@ def device_options(t):
 
 def mollier_style():
     return {} if settings.get('show_mollier') else {'display': 'none'}
+
+
+def wood_style():
+    return {} if settings.get('show_wood') else {'display': 'none'}
 
 
 def range_options(t):
@@ -346,6 +351,14 @@ def create_layout():
                     dcc.Slider(id='historical-time-slider', min=0, max=100, step=1, value=0, marks={},
                                tooltip={'placement': 'bottom', 'always_visible': False}, allow_direct_input=False),
                 ]),
+            ]),
+
+            html.Section(id='wood-panel', className='panel', style=wood_style(), children=[
+                html.Div(className='panel-head', children=[
+                    html.Span(id='label-wood-chart', className='panel-title', children=t['wood_chart']),
+                ]),
+                html.Div(className='panel-body', children=dcc.Graph(
+                    id='wood-chart', config={'displaylogo': False, 'displayModeBar': False})),
             ]),
 
             # Keuzevenster voor de historische periode

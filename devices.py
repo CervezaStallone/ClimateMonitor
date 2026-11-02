@@ -38,6 +38,9 @@ DEVICE_FIELDS = {
     'register_humidity': {'type': int, 'default': 2, 'env': 'MODBUS_REGISTER_HUMIDITY', 'min': 0, 'max': 65535},
     'scale_temp': {'type': float, 'default': 0.1, 'min': -1000, 'max': 1000, 'nonzero': True},
     'scale_humidity': {'type': float, 'default': 0.1, 'min': -1000, 'max': 1000, 'nonzero': True},
+    # Kalibratie: opgeteld bij de gemeten waarde (leeg = 0)
+    'offset_temp': {'type': float, 'default': 0.0, 'min': -20, 'max': 20, 'blank_default': True},
+    'offset_humidity': {'type': float, 'default': 0.0, 'min': -30, 'max': 30, 'blank_default': True},
     'enabled': {'type': bool, 'default': True},
 }
 
@@ -62,7 +65,12 @@ def _connect():
         id INTEGER PRIMARY KEY AUTOINCREMENT, bus_id INTEGER NOT NULL REFERENCES buses(id), name TEXT NOT NULL UNIQUE,
         slave_id INTEGER NOT NULL, function_code INTEGER NOT NULL, register_temp INTEGER NOT NULL,
         register_humidity INTEGER NOT NULL, scale_temp REAL NOT NULL, scale_humidity REAL NOT NULL,
+        offset_temp REAL NOT NULL DEFAULT 0, offset_humidity REAL NOT NULL DEFAULT 0,
         enabled INTEGER NOT NULL, UNIQUE (bus_id, slave_id))''')
+    columns = [row[1] for row in conn.execute('PRAGMA table_info(devices)')]
+    for column in ('offset_temp', 'offset_humidity'):   # tabel van vóór de kalibratie
+        if column not in columns:
+            conn.execute(f'ALTER TABLE devices ADD COLUMN {column} REAL NOT NULL DEFAULT 0')
     return conn
 
 
@@ -110,7 +118,7 @@ def _clean_rows(rows, fields):
         item, row_errors = {'id': row.get('id')}, {}
         for field, spec in fields.items():
             raw = row.get(field)
-            if raw is None and spec['type'] is bool:
+            if (raw is None and spec['type'] is bool) or (spec.get('blank_default') and str(raw or '').strip() == ''):
                 raw = spec['default']
             try:
                 value = _coerce(spec, raw)

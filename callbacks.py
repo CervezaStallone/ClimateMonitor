@@ -9,6 +9,7 @@ import alerts
 import devices
 import layout
 import settings
+import wood
 from translations import TRANSLATIONS
 from database import get_all_measurement_tables, build_union_query, DB_FILE
 from psychrometric import add_device_points, create_psychrometric_chart, create_psychrometric_chart_historical
@@ -27,9 +28,10 @@ THEMES = {
                   hover='#eceee8', ok='#0b8a0b', warn='#c98500', alarm='#d03b3b', offline='#7d838a'),
 }
 FONT = 'system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, sans-serif'
-METRIC_UNITS = {'temperature': '°C', 'humidity': '%', 'dewpoint': '°C', 'absolute_humidity': 'g/m³', 'comfort': ''}
+METRIC_UNITS = {'temperature': '°C', 'humidity': '%', 'dewpoint': '°C', 'absolute_humidity': 'g/m³', 'comfort': '',
+                'wood_emc': '%'}
 METRIC_KEYS = {'temperature': 'temperature', 'humidity': 'humidity', 'dewpoint': 'dewpoint',
-               'absolute_humidity': 'abs_humidity', 'comfort': 'comfort'}
+               'absolute_humidity': 'abs_humidity', 'comfort': 'comfort', 'wood_emc': 'wood_emc'}
 
 
 def theme_mode():
@@ -122,6 +124,8 @@ def metric_figure(df, names, colors, metric, t, mode):
             continue
         if metric == 'comfort':
             values = [humidex_score(tmp, hum) for tmp, hum in zip(group['temperature'], group['humidity'])]
+        elif metric == 'wood_emc':   # evenwichtswaarde van de lucht per interval (niet vertraagd)
+            values = wood.value(group['temperature'], group['humidity'])
         else:
             values = group[metric]
         fig.add_trace(go.Scatter(
@@ -137,6 +141,15 @@ def metric_figure(df, names, colors, metric, t, mode):
     if metric == 'comfort':
         fig.update_yaxes(range=[-0.5, 6.5], tickmode='linear', tick0=0, dtick=1)
     return fig
+
+
+def wood_zones(device_id):
+    """Houtvochtgrenzen uit de alarmregels: [(min, max, niveau)] voor één sensor of de globale regels."""
+    if device_id:
+        rules = alerts.effective_rules(device_id).values()
+    else:
+        rules = [r for r in alerts.load_rules() if r['enabled'] and r['device_id'] is None]
+    return [(r['min_value'], r['max_value'], r['level']) for r in rules if r['metric'] == 'wood_emc']
 
 
 def theme_mollier(fig, mode, point_color=None):
@@ -225,7 +238,8 @@ def register_callbacks(app):
          Output('metric-tabs', 'options'),
          Output('time-range-dropdown', 'options'),
          Output('label-psychrometric-chart', 'children'),
-         Output('label-time-position', 'children')],
+         Output('label-time-position', 'children'),
+         Output('label-wood-chart', 'children')],
         [Input('language-selector', 'value')]
     )
     def update_language(lang):
@@ -234,7 +248,7 @@ def register_callbacks(app):
             lang = 'en'
         t = TRANSLATIONS[lang]
         return (lang, t['app_name'], layout.nav_options(t), layout.view_options(t), layout.metric_options(t),
-                layout.range_options(t), t['psychrometric_chart'], t['time_position'])
+                layout.range_options(t), t['psychrometric_chart'], t['time_position'], t['wood_chart'])
 
     @app.callback(
         [Output('page-dashboard', 'style'),
@@ -321,6 +335,27 @@ def register_callbacks(app):
             fig.update_xaxes(range=[coldest - 3, 40])  # punten onder 0 °C zichtbaar houden
         return fig
     
+    @app.callback(
+        Output('wood-chart', 'figure'),
+        [Input('graph-update', 'n_intervals'),
+         Input('selected-language', 'data'),
+         Input('device-selector', 'value')],
+        State('main-tabs', 'value')
+    )
+    def update_wood_chart(n, lang, device_sel, tab):
+        """Houtvochtdiagram: actuele punten per sensor en de zones uit de houtvochtregels"""
+        if not settings.get('show_wood') or (callback_context.triggered_id == 'graph-update' and (n % 5 or tab == 'settings')):
+            return no_update
+        t = TRANSLATIONS.get(lang) or TRANSLATIONS['en']
+        mode = theme_mode()
+        colors = device_colors(mode)
+        latest = latest_per_device()
+        points = [(d['name'], latest[d['id']][1], latest[d['id']][2], colors.get(d['id'])) for d in devices.list_devices()
+                  if d['id'] in latest and (not device_sel or d['id'] == device_sel)]
+        fig = style_figure(wood.figure(points, wood_zones(device_sel), t, THEMES[mode]), mode, height=520)
+        fig.update_layout(hovermode='closest', margin=dict(l=60, r=50, t=30, b=50))
+        return fig
+
     # Callback voor modal open/close
     @app.callback(
         Output('range-modal', 'style'),
@@ -654,9 +689,12 @@ def register_callbacks(app):
             else:
                 label, sub = t['st_never'], devices.status(device['id']).get('error') or ''
             score = humidex_score(temp, hum) if temp is not None else None
+            wood_now = wood.current(device['id'])
+            if wood_now is None and temp is not None:
+                wood_now = float(wood.value(temp, hum))
             states.append({
                 'id': device['id'], 'name': device['name'], 'status': status, 'phases': phases, 'label': label,
-                'sub': sub[:80], 'temp': temp, 'hum': hum, 'dew': dew, 'ah': ah,
+                'sub': sub[:80], 'temp': temp, 'hum': hum, 'dew': dew, 'ah': ah, 'wood': wood_now,
                 'comfort': t[f'comfort_{score}'] if score is not None else '—',
                 'where': f"{config.get('bus', '')} · #{config.get('slave_id', '')}",
             })
@@ -672,10 +710,11 @@ def register_callbacks(app):
         return html.Img(src=src, className='spark', alt='') if src else None
 
     def render_board(states, colors, t):
-        show_comfort = settings.get('show_comfort')
+        show_comfort, show_wood = settings.get('show_comfort'), settings.get('show_wood')
         head = html.Tr([html.Th('', className='bar'), html.Th(t['hdr_sensor']), html.Th(t['temperature']), html.Th(t['humidity']),
                         html.Th(t['dewpoint'], className='col-wide'), html.Th(t['abs_humidity'], className='col-wide'),
                         html.Th(t['comfort'], className='col-wide') if show_comfort else None,
+                        html.Th(t['wood_emc'], className='col-wide') if show_wood else None,
                         html.Th(t['hdr_trend'], className='col-wide'),
                         html.Th(t['hdr_status'], className='col-status')])
         rows = []
@@ -693,6 +732,7 @@ def register_callbacks(app):
                 html.Td(value_cell(s_['dew'], '°C', ph.get('dewpoint')), className='col-wide'),
                 html.Td(value_cell(s_['ah'], 'g/m³', ph.get('absolute_humidity')), className='col-wide'),
                 html.Td(s_['comfort'], className='comfort col-wide') if show_comfort else None,
+                html.Td(value_cell(s_['wood'], '%', ph.get('wood_emc')), className='col-wide') if show_wood else None,
                 html.Td(spark(s_['id'], color), className='col-wide'),
                 html.Td([html.Span(s_['label'], className=f"st st-{s_['status']}"),
                          html.Span(s_['sub'], className='st-sub')], className='col-status'),
@@ -719,6 +759,8 @@ def register_callbacks(app):
                 html.Div(className='meter-stats', children=[
                     html.Span(f"{t['dewpoint']} {fmt(s_['dew'])} °C"),
                     html.Span(f"{fmt(s_['ah'])} g/m³"),
+                    html.Span(f"{t['wood_emc']} {fmt(s_['wood'])} %",
+                              className=cls('wood_emc')) if settings.get('show_wood') else None,
                     html.Span(s_['sub']),
                 ]),
                 spark(s_['id'], colors.get(s_['id']), width=300),

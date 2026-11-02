@@ -552,8 +552,8 @@ def test_rule_validation_and_override():
     assert alerts.validate_rules([{'scope': 0, 'metric': 'humidity', 'max_value': 5}] * 2)[1] == {1: {'metric': 'err_duplicate'}}
     assert alerts.save_rules([{'scope': 0, 'metric': 'humidity', 'max_value': 70, 'enabled': 'true'},
                               {'scope': kas, 'metric': 'humidity', 'max_value': 90, 'enabled': 'true'}]) == {}
-    assert alerts.effective_rules(kas)['humidity']['max_value'] == 90
-    assert alerts.effective_rules(names['Koelcel']['id'])['humidity']['max_value'] == 70
+    assert alerts.effective_rules(kas)[('humidity', 'alarm')]['max_value'] == 90
+    assert alerts.effective_rules(names['Koelcel']['id'])[('humidity', 'alarm')]['max_value'] == 70
 
 
 def test_alarm_delay_single_alert_and_recovery():
@@ -741,6 +741,151 @@ def test_mqtt_test_connection_reports_errors():
     config.update(mqtt_host='127.0.0.1', mqtt_port=port)
     error = mqtt_publisher.test_connection(config)
     assert error and 'refused' in error.lower()
+
+
+# --- houtvocht en kalibratie ---------------------------------------------------
+
+def test_wood_emc_matches_wood_handbook():
+    import wood
+    fresh_settings()
+    for temp, rh, expected in ((20, 65, 12.0), (20, 85, 18.0), (20, 90, 20.5)):
+        assert abs(float(wood.emc(temp, rh)) - expected) < 0.2, (temp, rh)
+    assert settings.save({'wood_emc_offset': -1.5}) == {}
+    assert abs(float(wood.value(20, 65)) - 10.5) < 0.2
+    line = wood.iso_line(18, [20])                       # RV waarbij het gecorrigeerde houtvocht 18 % is
+    assert abs(float(wood.value(20, line[0])) - 18) < 0.05
+
+
+def test_wood_value_follows_air_slowly_and_starts_from_history():
+    import wood
+    fresh_settings()
+    database.init_database()
+    wood._smooth.clear()
+    assert settings.save({'wood_response_hours': 24}) == {}
+    now = int(time.time())
+    conn = sqlite3.connect(settings.DB_FILE)
+    conn.executemany(f'INSERT INTO {database.get_table_name()} (timestamp, temperature, humidity, device_id) '
+                     'VALUES (?, 20, 65, 1)', [(now - s,) for s in range(1, 600, 60)])
+    conn.commit()
+    conn.close()
+    first = wood.update(1, 20, 90, now=now)              # natte lucht, maar het hout zat op 12 % (geen vals alarm)
+    assert abs(first - 12.0) < 0.2
+    after_day = wood.update(1, 20, 90, now=now + 86400)  # na één reactietijd ~63 % van de weg naar 20.5 %
+    assert 17 < after_day < 18.5 and wood.current(1) == after_day
+    settings.save({'wood_response_hours': 0})
+    assert abs(wood.update(1, 20, 65, now=now + 86401) - 12.0) < 0.2
+
+
+def test_calibration_offsets_and_dewpoint():
+    fresh_settings()
+    q = queue.Queue()
+    dev = {**device('Koelcel', offset_temp=-0.5, offset_humidity=3), 'id': 1}
+    poller = modbus_reader.BusPoller({**bus(), 'id': 1}, [dev], q)
+    poller.poll(FakeInstrument({1: 200, 2: 980}), dev)     # 20.0 °C / 98.0 % -> 19.5 °C / 100 % (begrensd)
+    assert q.get_nowait()[1:3] == (19.5, 100.0)
+    dew, _ = modbus_reader.derived_values(20.0, 50.0)
+    assert abs(dew - 9.3) < 0.1                            # Magnus; de oude vuistregel gaf 10.0
+    assert devices.validate_config([bus()], [device(offset_humidity=50)])[2] == \
+        {'devices': {0: {'offset_humidity': 'err_range'}}}
+    assert devices.save_config([bus()], [device(offset_temp=0.3)]) == {}
+    assert devices.load_config()[1][0]['offset_temp'] == 0.3
+
+
+def test_poller_feeds_wood_moisture_to_alarms_and_optionally_mqtt():
+    import wood
+    names = setup_alerts([{'scope': 0, 'metric': 'wood_emc', 'max_value': 20, 'enabled': 'true'}])
+    assert settings.save({'alert_delay_seconds': 0, 'wood_response_hours': 0, 'show_wood': []}) == {}
+    wood._smooth.clear()
+    dev = {**devices.load_config()[1][0], 'id': names['Koelcel']['id']}
+    poller = modbus_reader.BusPoller({**bus(), 'id': 1}, [dev], queue.Queue())
+    poller.poll(FakeInstrument({1: 200, 2: 920}), dev)     # 20 °C / 92 % -> ~21.7 % houtvocht
+    assert 'maximum van 20.0' in outbox_texts()[0]
+    assert 'wood_emc' not in mqtt_publisher._latest[dev['id']]['values']
+    assert settings.save({'show_wood': ['on']}) == {}
+    poller.poll(FakeInstrument({1: 200, 2: 920}), dev)
+    assert abs(mqtt_publisher._latest[dev['id']]['values']['wood_emc'] - 21.7) < 0.3
+
+
+def test_wood_ui_follows_setting():
+    import callbacks
+    import layout
+    import settings_ui
+    import wood
+    fresh_settings()
+    t = TRANSLATIONS['nl']
+    assert 'wood_emc' not in [o['value'] for o in layout.metric_options(t)]
+    assert layout.wood_style() == {'display': 'none'}
+    assert settings.save({'show_wood': ['on']}) == {}
+    assert 'wood_emc' in [o['value'] for o in layout.metric_options(t)] and layout.wood_style() == {}
+    fig = wood.figure([('Kas', 20.0, 85.0, '#2a78d6')], [(None, 18, 'warning'), (None, 20, 'alarm')], t,
+                      callbacks.THEMES['dark'])
+    names = [trace.name for trace in fig.data]
+    assert 'Kas' in names and 'Waarschuwing ≥ 18 %' in names and 'Alarm ≥ 20 %' in names
+    assert {'offset_temp', 'offset_humidity'} <= set(settings_ui.DEVICE_COLUMNS) and 'wood' in settings_ui.SECTIONS
+
+
+def test_wood_graph_and_zones_from_rules():
+    import callbacks
+    import pandas as pd
+    names = setup_alerts([{'scope': 0, 'metric': 'wood_emc', 'max_value': 18, 'level': 'warning', 'enabled': 'true'},
+                          {'scope': 0, 'metric': 'humidity', 'max_value': 80, 'enabled': 'true'}])
+    kas = names['Kas']['id']
+    alerts.save_rules([{'scope': 0, 'metric': 'wood_emc', 'max_value': 18, 'level': 'warning', 'enabled': 'true'},
+                       {'scope': kas, 'metric': 'wood_emc', 'max_value': 16, 'level': 'warning', 'enabled': 'true'}])
+    assert callbacks.wood_zones(None) == [(None, 18.0, 'warning')]
+    assert callbacks.wood_zones(kas) == [(None, 16.0, 'warning')]
+    df = pd.DataFrame({'timestamp': [1], 'temperature': [20.0], 'humidity': [65.0], 'device_id': [1]})
+    fig = callbacks.metric_figure(df, {1: 'Kas'}, {}, 'wood_emc', TRANSLATIONS['nl'], 'dark')
+    assert abs(fig.data[0].y[0] - 12.0) < 0.2
+
+
+def run_callback(app, output, *args, trigger):
+    """Roep een geregistreerde Dash callback aan alsof 'trigger' net veranderde."""
+    from dash._callback_context import context_value
+    from dash._utils import AttributeDict
+    context_value.set(AttributeDict(triggered_inputs=[{'prop_id': trigger, 'value': None}]))
+    key = next(k for k in app.callback_map if output in k)
+    return app.callback_map[key]['callback'].__wrapped__(*args)
+
+
+def test_wood_chart_and_board_follow_setting():
+    import json
+    import callbacks
+    import plotly
+    from dash import Dash
+    names = setup_alerts([{'scope': 0, 'metric': 'wood_emc', 'max_value': 18, 'level': 'warning', 'enabled': 'true'}])
+    database.init_database()
+    conn = sqlite3.connect(settings.DB_FILE)
+    conn.execute(f'INSERT INTO {database.get_table_name()} (timestamp, temperature, humidity, device_id) VALUES (?, 20, 85, ?)',
+                 (int(time.time()), names['Koelcel']['id']))
+    conn.commit()
+    conn.close()
+    app = Dash(__name__)
+    callbacks.register_callbacks(app)
+    assert run_callback(app, 'wood-chart.figure', 0, 'nl', 0, 'dashboard', trigger='selected-language.data') is \
+        callbacks.no_update                                  # houtvocht staat uit
+    assert settings.save({'show_wood': ['on']}) == {}
+    fig = run_callback(app, 'wood-chart.figure', 0, 'nl', 0, 'dashboard', trigger='selected-language.data')
+    assert {'Koelcel', 'Waarschuwing ≥ 18 %'} <= {trace.name for trace in fig.data}
+    board, _ = run_callback(app, 'device-overview.children', 0, 'nl', 'board', 'dashboard', trigger='view-toggle.value')
+    assert 'Houtvocht' in json.dumps(board, cls=plotly.utils.PlotlyJSONEncoder, ensure_ascii=False)
+
+
+def test_warning_and_alarm_levels():
+    names = setup_alerts([{'scope': 0, 'metric': 'wood_emc', 'max_value': 18, 'level': 'warning', 'enabled': 'true'},
+                          {'scope': 0, 'metric': 'wood_emc', 'max_value': 20, 'level': 'alarm', 'enabled': 'true'}])
+    assert settings.save({'alert_delay_seconds': 0, 'alert_hysteresis_wood': 0.5}) == {}
+    cel = names['Koelcel']
+    alerts.evaluate(cel, {'wood_emc': 18.5}, now=1)
+    texts = outbox_texts()
+    assert len(texts) == 1 and 'waarschuwingsgrens van 18.0' in texts[0]
+    assert alerts.device_status(cel['id']) == ('warn', {'wood_emc': 'pending'})
+    alerts.evaluate(cel, {'wood_emc': 20.4}, now=2)
+    assert 'maximum van 20.0' in outbox_texts()[0]
+    assert alerts.device_status(cel['id']) == ('alarm', {'wood_emc': 'alarm'})
+    rule = {'scope': 0, 'metric': 'wood_emc', 'max_value': 18, 'level': 'warning'}
+    assert alerts.validate_rules([rule, rule])[1] == {1: {'metric': 'err_duplicate'}}
+    assert alerts.validate_rules([{**rule, 'level': 'x'}])[1] == {0: {'level': 'err_choice'}}
 
 
 # --- vertalingen --------------------------------------------------------------

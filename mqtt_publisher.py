@@ -3,7 +3,7 @@
 Topics (prefix instelbaar, standaard 'xy-md02'):
   <prefix>/status                 online / offline (retained, offline via last will)
   <prefix>/<sensor>/state         JSON met alle waarden
-  <prefix>/<sensor>/<grootheid>   losse waarde (temperature, humidity, dewpoint, absolute_humidity)
+  <prefix>/<sensor>/<grootheid>   losse waarde (temperature, humidity, dewpoint, absolute_humidity, wood_emc)
 
 De poller schrijft alleen de laatste waarden in het geheugen; een eigen thread verbindt, verbindt
 opnieuw na wijzigingen in Settings of uitval, en publiceert elk interval.
@@ -21,7 +21,7 @@ import paho.mqtt.client as mqtt
 import devices
 import settings
 
-METRICS = ('temperature', 'humidity', 'dewpoint', 'absolute_humidity')
+METRICS = ('temperature', 'humidity', 'dewpoint', 'absolute_humidity', 'wood_emc')   # wood_emc alleen als houtvocht aan staat
 CONFIG_KEYS = ('mqtt_enabled', 'mqtt_host', 'mqtt_port', 'mqtt_tls', 'mqtt_username', 'mqtt_password',
                'mqtt_client_id', 'mqtt_topic_prefix', 'mqtt_qos', 'mqtt_retain')
 CONNECT_TIMEOUT = 10
