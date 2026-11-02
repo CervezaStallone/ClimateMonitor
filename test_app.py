@@ -821,6 +821,27 @@ def test_logo_in_header_and_as_favicon():
     assert 'rel="icon"' in layout.HTML_TEMPLATE and '/assets/logo.svg' in layout.HTML_TEMPLATE
 
 
+def test_saving_settings_does_not_repeat_active_alarms():
+    """Opslaan zonder wijziging aan een regel of zone: actief alarm blijft, geen nieuwe melding."""
+    import settings_ui
+    import zones
+    rule = {'scope': 0, 'metric': 'temperature', 'max_value': 8, 'enabled': 'true'}
+    names = setup_alerts([rule])
+    assert settings.save({'alert_delay_seconds': 0}) == {}
+    assert zones.save([{'scope': 0, 'name': 'Schimmel', 'color': 'red', 'mode': 'keep_outside', 'level': 'alarm',
+                        'temp_min': 0, 'temp_max': 40, 'rh_min': 80, 'rh_max': 100, 'enabled': 'true'}]) == {}
+    cel = names['Koelcel']
+    alerts.evaluate(cel, {'temperature': 9.0, 'humidity': 85.0}, now=1)
+    assert len(outbox_texts()) == 2
+    assert alerts.save_rules([rule]) == {}                                          # zelfde regel
+    assert zones.save(settings_ui.table_rows('zones')) == {}                        # zelfde zone (zelfde id)
+    alerts.evaluate(cel, {'temperature': 9.0, 'humidity': 85.0}, now=2)
+    assert outbox_texts() == [] and alerts.device_status(cel['id'])[0] == 'alarm'
+    assert alerts.save_rules([{**rule, 'max_value': 8.5}]) == {}                    # grens gewijzigd: opnieuw beoordelen
+    alerts.evaluate(cel, {'temperature': 9.0, 'humidity': 85.0}, now=3)
+    assert any('maximum van 8.5' in x for x in outbox_texts())
+
+
 def test_board_shows_zone_alarm():
     import json
     import callbacks

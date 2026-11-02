@@ -81,7 +81,7 @@ def _field(key, value, t):
 def table_rows(table):
     """Opgeslagen bussen, sensoren, grenswaarden of zones als formulierregels (aan/uit als 'true'/'false')."""
     if table == 'zones':
-        return [{'id': None, 'scope': z['device_id'] or 0, 'name': z['name'], 'mode': z['mode'], 'level': z['level'],
+        return [{'id': z['id'], 'scope': z['device_id'] or 0, 'name': z['name'], 'mode': z['mode'], 'level': z['level'],
                  'color': z['color'], 'shape': z['shape'], 'points': json.dumps(z['points']),
                  **{f: z[f] for f in RECT_FIELDS}, 'enabled': 'true' if z['enabled'] else 'false'} for z in zones.load()]
     if table == 'rules':
@@ -432,7 +432,7 @@ def register_settings_callbacks(app):
             return field_errors, t['msg_save_failed'], bad_style
         devices.save_config(bus_rows or [], device_rows or [])
         zones.save(zone_rows or [])
-        alerts.save_rules(rule_rows or [])   # na de zones: wist ook de alarmtoestand (zone-id's zijn nieuw)
+        alerts.save_rules(rule_rows or [])
 
         restart_changed = any(settings.SCHEMA[k].get('restart') and settings.get(k) != before[k] for k in keys)
         message = t['msg_saved_restart'] if restart_changed else t['msg_saved']

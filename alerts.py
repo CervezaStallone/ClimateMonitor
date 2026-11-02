@@ -116,6 +116,7 @@ def save_rules(rows):
     clean, errors = validate_rules(rows)
     if errors:
         return errors
+    before = {key: _rule_limits(*key) for key in list(_state)}
     with _lock:
         conn = _connect()
         try:
@@ -129,8 +130,20 @@ def save_rules(rows):
         finally:
             conn.close()
         _rules_cache = None
-        _state.clear()   # nieuwe grenzen: opnieuw beoordelen
+    # Alleen regels met andere grenzen opnieuw beoordelen: anders meldt elk Opslaan in Settings actieve alarmen opnieuw.
+    # Zones hebben hun eigen opruiming (evaluate) en houden hun id bij opslaan.
+    for key, limits in before.items():
+        if not key[1].startswith('zone:') and _rule_limits(*key) != limits:
+            _state.pop(key, None)
     return {}
+
+
+def _rule_limits(device_id, metric, level):
+    """(min, max) van de regel die nu voor deze sensor + grootheid + niveau geldt, None zonder regel."""
+    if metric.startswith('zone:'):
+        return None
+    rule = effective_rules(device_id).get((metric, level))
+    return (rule['min_value'], rule['max_value']) if rule else None
 
 
 def load_rules():

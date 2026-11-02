@@ -91,7 +91,9 @@ def validate(rows):
         points = _points(row, row_errors) if shape in SHAPES else []
         if row_errors:
             errors[index] = row_errors
-        clean.append({'device_id': scope or None, 'name': name, 'color': row.get('color'), 'mode': row.get('mode'),
+        # Bestaande zone houdt zijn id (en daarmee zijn alarmtoestand) bij opnieuw opslaan
+        clean.append({'id': int(row['id']) if row.get('id') else None, 'device_id': scope or None, 'name': name,
+                      'color': row.get('color'), 'mode': row.get('mode'),
                       'level': row.get('level'), 'shape': shape, 'points': points,
                       'enabled': str(row.get('enabled', 'true')).lower() in ('true', '1')})
     return clean, errors
@@ -108,9 +110,9 @@ def save(rows):
         try:
             conn.execute('BEGIN')
             conn.execute('DELETE FROM zones')
-            conn.executemany('INSERT INTO zones (device_id, name, color, mode, level, shape, points, enabled) '
-                             'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-                             [(z['device_id'], z['name'], z['color'], z['mode'], z['level'], z['shape'],
+            conn.executemany('INSERT INTO zones (id, device_id, name, color, mode, level, shape, points, enabled) '
+                             'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                             [(z['id'], z['device_id'], z['name'], z['color'], z['mode'], z['level'], z['shape'],
                                json.dumps(z['points']), int(z['enabled'])) for z in clean])
             conn.commit()
         finally:
