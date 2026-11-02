@@ -1339,7 +1339,7 @@ TRANSLATIONS = {
         'opt_color_yellow': 'Jaune',
         'zone_free_shape': 'Forme libre (dessinée)',
         'btn_draw_zone': 'Dessiner une zone',
-        'hint_draw_zone': 'Dessinez une forme fermée dans le diagramme avec la souris ou le doigt, donnez-lui un nom et enregistrez. Choisissez zone souhaitée ou zone de danger et une couleur. La zone s'applique au capteur choisi en haut (ou à tous) ; modifiez le niveau et les limites dans Settings > Zones.',
+        'hint_draw_zone': 'Dessinez une forme fermée dans le diagramme avec la souris ou le doigt, donnez-lui un nom et enregistrez. Choisissez zone souhaitée ou zone de danger et une couleur. La zone s’applique au capteur choisi en haut (ou à tous) ; modifiez le niveau et les limites dans Settings > Zones.',
         'lbl_zone_name': 'Nom de la zone',
         'btn_save_zone': 'Enregistrer la zone',
         'btn_cancel': 'Annuler',
