@@ -2,7 +2,7 @@
 
 All notable changes to Climate Monitor. Older versions: see the [GitHub releases](https://github.com/CervezaStallone/ClimateMonitor/releases).
 
-## [Unreleased]
+## [2.3.0] - 2026-11-02
 
 ### Added
 - **Wood moisture** (equilibrium moisture content, USDA Wood Handbook) per sensor, with its own diagram, a correction for the wood species and a response time (averaged value, so short peaks do not trigger alarms). On/off in Settings → Display.
