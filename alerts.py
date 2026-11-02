@@ -42,6 +42,7 @@ _lock = threading.Lock()
 _rules_cache = None           # [regel dicts], None = opnieuw laden
 _state = {}                   # (device_id, metric, level) -> {'phase', 'since', 'kind', 'limit'}
 _offline = set()              # device ids waarvoor een offline melding is verstuurd
+_mutes = {}                   # (device_id, grootheid of 'zone:<id>') -> gedempt tot (epoch)
 _first_seen = {}              # device id -> eerste keer gezien door de offline controle (nieuwe sensoren)
 _outbox = queue.Queue()
 log = collections.deque(maxlen=20)   # laatste meldingen: {'time', 'channel', 'text', 'ok', 'error'}
@@ -214,7 +215,7 @@ def _evaluate_metric(device, metric, level, value, rule, delay, now):
         if recovered and breach is None:
             _state[key] = {'phase': 'normal'}
             if settings.get('alert_notify_recovery'):
-                _notify('alert_recovered', device, metric, value, limit)
+                _notify('alert_recovered', device, metric, value, limit, now)
         return
     if breach is None:
         _state[key] = {'phase': 'normal'}
@@ -222,9 +223,9 @@ def _evaluate_metric(device, metric, level, value, rule, delay, now):
     if state['phase'] != 'pending' or state['kind'] != breach[0]:
         _state[key] = state = {'phase': 'pending', 'since': now, 'kind': breach[0], 'limit': breach[1]}
     if now - state['since'] >= delay:
-        _state[key] = {'phase': 'alarm', 'kind': breach[0], 'limit': breach[1]}
+        _state[key] = {'phase': 'alarm', 'kind': breach[0], 'limit': breach[1], 'since': state['since']}
         prefix = 'alert_warn_' if level == 'warning' else 'alert_'
-        _notify(prefix + breach[0], device, metric, value, breach[1])
+        _notify(prefix + breach[0], device, metric, value, breach[1], now)
 
 
 def _evaluate_zone(device, zone, temperature, humidity, delay, now):
@@ -240,7 +241,7 @@ def _evaluate_zone(device, zone, temperature, humidity, delay, now):
         if safe:
             _state[key] = {'phase': 'normal'}
             if settings.get('alert_notify_recovery'):
-                _notify_zone('alert_zone_recovered', device, zone, temperature, humidity)
+                _notify_zone('alert_zone_recovered', device, zone, temperature, humidity, now)
         return
     if not breach:
         _state[key] = {'phase': 'normal'}
@@ -248,17 +249,21 @@ def _evaluate_zone(device, zone, temperature, humidity, delay, now):
     if state['phase'] != 'pending':
         _state[key] = state = {'phase': 'pending', 'since': now}
     if now - state['since'] >= delay:
-        _state[key] = {'phase': 'alarm'}
-        _notify_zone('alert_zone_entered' if inside else 'alert_zone_left', device, zone, temperature, humidity)
+        _state[key] = {'phase': 'alarm', 'since': state['since']}
+        _notify_zone('alert_zone_entered' if inside else 'alert_zone_left', device, zone, temperature, humidity, now)
 
 
-def _notify_zone(template, device, zone, temperature, humidity):
+def _notify_zone(template, device, zone, temperature, humidity, now):
+    if is_muted(device['id'], f"zone:{zone['id']}", now):
+        return
     send(_t()[template].format(icon='🟡' if zone['level'] == 'warning' else '⚠️', device=device['name'],
                                zone=zone['name'], temperature=f'{temperature:.1f}', humidity=f'{humidity:.0f}',
                                time=_now_text()))
 
 
-def _notify(template, device, metric, value, limit):
+def _notify(template, device, metric, value, limit, now):
+    if is_muted(device['id'], metric, now):
+        return
     t = _t()
     name_key, unit, _ = METRICS[metric]
     send(t[template].format(device=device['name'], metric=t[name_key], value=f'{value:.1f}', limit=f'{limit:.1f}',
@@ -270,6 +275,40 @@ def _check_online(device, now):
         _offline.discard(device['id'])
         if settings.get('alert_offline_minutes'):
             send(_t()['alert_online'].format(device=device['name'], time=_now_text(now)))
+
+
+# --- dempen -----------------------------------------------------------------------
+# ponytail: dempingen staan in het geheugen en vervallen bij een herstart (dan weer meldingen); in de database
+# zetten als langere dempingen over een herstart heen moeten blijven
+
+def mute(device_id, metric, seconds, now=None):
+    """Geen meldingen (alarm of herstel) voor deze sensor + grootheid/zone tot nu + seconds."""
+    _mutes[(device_id, metric)] = (now or time.time()) + seconds
+
+
+def unmute(device_id, metric):
+    _mutes.pop((device_id, metric), None)
+
+
+def is_muted(device_id, metric, now=None):
+    return _mutes.get((device_id, metric), 0) > (now or time.time())
+
+
+def active_alarms(now=None):
+    """Actieve alarmen en waarschuwingen voor het alarmvenster, zwaarste eerst."""
+    now = now or time.time()
+    names = {d['id']: d['name'] for d in devices.list_devices()}
+    zone_names = {f"zone:{z['id']}": z['name'] for z in zones.load()}
+    result = []
+    for (device_id, metric, level), state in list(_state.items()):
+        if state['phase'] == 'normal' or device_id not in names:
+            continue
+        until = _mutes.get((device_id, metric))
+        result.append({'device_id': device_id, 'device': names[device_id], 'metric': metric,
+                       'zone': zone_names.get(metric), 'level': level,
+                       'phase': 'alarm' if state['phase'] == 'alarm' else 'pending', 'since': state.get('since'),
+                       'muted_until': until if until and until > now else None})
+    return sorted(result, key=lambda a: (a['phase'] != 'alarm', a['level'] != 'alarm', a['device'], a['metric']))
 
 
 def device_status(device_id):

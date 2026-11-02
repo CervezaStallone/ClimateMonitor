@@ -3,7 +3,7 @@ import sqlite3
 import math
 import pandas as pd
 from datetime import datetime, timedelta
-from dash import Patch, callback_context, html, no_update, Input, Output, State
+from dash import ALL, Patch, callback_context, html, no_update, Input, Output, State
 import plotly.graph_objects as go
 
 import alerts
@@ -840,6 +840,65 @@ def register_callbacks(app):
                 spark(s_['id'], colors.get(s_['id']), width=300),
             ]))
         return html.Div(cards, className='meters')
+
+    @app.callback(
+        Output('alarm-modal', 'style'),
+        [Input('status-summary', 'n_clicks'),
+         Input('close-alarm-modal', 'n_clicks')],
+        prevent_initial_call=True
+    )
+    def toggle_alarm_modal(open_clicks, close_clicks):
+        return {} if callback_context.triggered_id == 'status-summary' else {'display': 'none'}
+
+    def alarm_list(t, logged_in):
+        """Actieve alarmen en waarschuwingen met dempknoppen (dempen alleen ingelogd)."""
+        when = lambda ts: datetime.fromtimestamp(ts).strftime('%d-%m %H:%M')   # noqa: E731
+        items = []
+        for a in alerts.active_alarms():
+            what = f"{t['zone']} {a['zone']}" if a['zone'] else t[METRIC_KEYS.get(a['metric'], a['metric'])]
+            status = 'alarm' if a['phase'] == 'alarm' and a['level'] == 'alarm' else 'warn'
+            details = [t['alarm_since'].format(time=when(a['since']))] if a['since'] else []
+            if a['muted_until']:
+                details.append(t['muted_until'].format(time=when(a['muted_until'])))
+            buttons = [html.Button(t[f'btn_mute_{minutes}'], n_clicks=0, className='btn btn-small',
+                                   id={'type': 'mute', 'device': a['device_id'], 'metric': a['metric'], 'minutes': minutes})
+                       for minutes in (15, 60, 480, 1440)]
+            if a['muted_until']:
+                buttons.append(html.Button(t['btn_unmute'], n_clicks=0, className='btn btn-small btn-link',
+                                           id={'type': 'mute', 'device': a['device_id'], 'metric': a['metric'], 'minutes': 0}))
+            items.append(html.Li(className='alarm-item' + (' is-muted' if a['muted_until'] else ''), children=[
+                html.Div([html.Span(t['st_' + status], className=f'st st-{status}'), html.Strong(a['device']),
+                          html.Span(what)], className='alarm-what'),
+                html.Div(' · '.join(details), className='alarm-when'),
+                html.Div([html.Span(t['lbl_mute'], className='cfg-label'), *buttons], className='alarm-actions')
+                if logged_in else None,
+            ]))
+        if not items:
+            return html.Div(t['alarms_none'], className='hint')
+        return [None if logged_in else html.Div(t['mute_login'], className='hint'),
+                html.Ul(items, className='alarm-items')]
+
+    @app.callback(
+        Output('alarm-list', 'children'),
+        [Input('graph-update', 'n_intervals'),
+         Input({'type': 'mute', 'device': ALL, 'metric': ALL, 'minutes': ALL}, 'n_clicks')],
+        [State('selected-language', 'data'),
+         State('alarm-modal', 'style')],
+        prevent_initial_call=True
+    )
+    def update_alarm_list(n, mute_clicks, lang, modal_style):
+        """Lijst verversen zolang het venster open is; dempknop: dempen of opheffen (alleen ingelogd)."""
+        if (modal_style or {}).get('display') == 'none':
+            return no_update
+        t = TRANSLATIONS.get(lang) or TRANSLATIONS['en']
+        trigger = callback_context.triggered_id
+        logged_in = auth.is_logged_in()
+        if isinstance(trigger, dict) and callback_context.triggered[0].get('value') and logged_in:
+            if trigger['minutes']:
+                alerts.mute(trigger['device'], trigger['metric'], trigger['minutes'] * 60)
+            else:
+                alerts.unmute(trigger['device'], trigger['metric'])
+        return alarm_list(t, logged_in)
 
     @app.callback(
         [Output('device-overview', 'children'),

@@ -47,6 +47,7 @@ def fresh_settings():
     alerts._state.clear()
     alerts._offline.clear()
     alerts._first_seen.clear()
+    alerts._mutes.clear()
     import zones
     zones._cache = None
     while not alerts._outbox.empty():
@@ -726,6 +727,58 @@ def test_zone_alarm_does_not_stick_after_zones_are_saved_again():
     assert alerts.device_status(cel['id']) == ('ok', {})
 
 
+def test_muted_alarm_is_listed_but_sends_nothing():
+    names = setup_alerts([{'scope': 0, 'metric': 'temperature', 'max_value': 8, 'enabled': 'true'}])
+    assert settings.save({'alert_delay_seconds': 0}) == {}
+    cel = names['Koelcel']
+    alerts.evaluate(cel, {'temperature': 9.0}, now=1000)
+    assert len(outbox_texts()) == 1
+    active = alerts.active_alarms(now=1000)
+    assert [(a['device'], a['metric'], a['level'], a['phase'], a['since'], a['muted_until']) for a in active] == \
+        [('Koelcel', 'temperature', 'alarm', 'alarm', 1000, None)]
+    alerts.mute(cel['id'], 'temperature', 3600, now=1000)
+    alerts.evaluate(cel, {'temperature': 5.0}, now=1100)              # herstel tijdens dempen: geen melding
+    alerts.evaluate(cel, {'temperature': 9.0}, now=1200)              # nieuw alarm tijdens dempen: geen melding
+    assert outbox_texts() == []
+    assert alerts.active_alarms(now=1200)[0]['muted_until'] == 4600
+    alerts.evaluate(cel, {'temperature': 5.0}, now=4700)              # demping voorbij: herstel wordt weer gemeld
+    assert len(outbox_texts()) == 1
+    alerts.evaluate(cel, {'temperature': 9.0}, now=4800)
+    alerts.mute(cel['id'], 'temperature', 3600, now=4800)
+    alerts.unmute(cel['id'], 'temperature')
+    alerts.evaluate(cel, {'temperature': 5.0}, now=4900)
+    assert len(outbox_texts()) == 2
+
+
+def test_alarm_window_lists_alarms_and_mutes_when_logged_in():
+    import json
+    import callbacks
+    import layout
+    from dash import Dash
+    names = setup_alerts([{'scope': 0, 'metric': 'temperature', 'max_value': 8, 'enabled': 'true'}])
+    alerts._mutes.clear()
+    assert settings.save({'alert_delay_seconds': 0}) == {}
+    cel = names['Koelcel']
+    alerts.evaluate(cel, {'temperature': 9.0})
+    assert 'alarm-modal' in str(layout.create_layout())
+    app = Dash(__name__)
+    callbacks.register_callbacks(app)
+    assert run_callback(app, 'alarm-modal.style', 1, 0, trigger='status-summary.n_clicks') == {}
+    assert run_callback(app, 'alarm-modal.style', 1, 1, trigger='close-alarm-modal.n_clicks') == {'display': 'none'}
+    mute = json.dumps({'device': cel['id'], 'metric': 'temperature', 'minutes': 60, 'type': 'mute'},
+                      separators=(',', ':')) + '.n_clicks'
+    with app.server.test_request_context():
+        listing = str(run_callback(app, 'alarm-list.children', 0, [1], 'nl', {}, trigger=mute, value=1))
+        assert 'Koelcel' in listing and not alerts.is_muted(cel['id'], 'temperature')   # dashboard kan publiek zijn
+        assert TRANSLATIONS_NL['mute_login'] in listing
+        original, auth.is_logged_in = auth.is_logged_in, lambda: True
+        try:
+            listing = str(run_callback(app, 'alarm-list.children', 0, [1], 'nl', {}, trigger=mute, value=1))
+        finally:
+            auth.is_logged_in = original
+    assert alerts.is_muted(cel['id'], 'temperature') and TRANSLATIONS_NL['muted_until'].split('{')[0] in listing
+
+
 def test_board_shows_zone_alarm():
     import json
     import callbacks
@@ -874,6 +927,7 @@ def test_new_sensor_without_readings_gets_full_offline_period():
     names = setup_alerts([])
     settings.save({'alert_offline_minutes': 5})
     alerts._first_seen.clear()
+    alerts._mutes.clear()
     alerts.check_offline(now=10_000)                         # net toegevoegd, nog geen meting
     alerts.check_offline(now=10_000 + 4 * 60)
     assert outbox_texts() == []
@@ -1110,11 +1164,11 @@ def test_wood_graph_and_zones_from_rules():
     assert abs(fig.data[0].y[0] - 12.0) < 0.2
 
 
-def run_callback(app, output, *args, trigger):
-    """Roep een geregistreerde Dash callback aan alsof 'trigger' net veranderde."""
+def run_callback(app, output, *args, trigger, value=None):
+    """Roep een geregistreerde Dash callback aan alsof 'trigger' net veranderde (naar value)."""
     from dash._callback_context import context_value
     from dash._utils import AttributeDict
-    context_value.set(AttributeDict(triggered_inputs=[{'prop_id': trigger, 'value': None}]))
+    context_value.set(AttributeDict(triggered_inputs=[{'prop_id': trigger, 'value': value}]))
     key = output if output in app.callback_map else next(k for k in app.callback_map if output in k)
     return app.callback_map[key]['callback'].__wrapped__(*args)
 

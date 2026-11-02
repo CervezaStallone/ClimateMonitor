@@ -190,6 +190,16 @@ HTML_TEMPLATE = '''
             .modal h3 { margin: 0 0 8px; font-size: 18px; }
             .modal h4 { margin: 20px 0 10px; font-size: 12px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
             .modal-close { position: absolute; top: 14px; right: 16px; font-size: 18px; }
+            .modal-wide { max-width: 760px; }
+            .summary-btn { background: none; border: 1px solid transparent; padding: 5px 8px; cursor: pointer; text-align: left; }
+            .summary-btn:hover { border-color: var(--line); background: var(--hover); }
+            .alarm-items { list-style: none; margin: 8px 0 0; padding: 0; border-top: 1px solid var(--line); }
+            .alarm-item { padding: 12px 0; border-bottom: 1px solid var(--line); display: grid; gap: 6px; }
+            .alarm-item.is-muted { opacity: .65; }
+            .alarm-what { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+            .alarm-when { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+            .alarm-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+            .alarm-actions .cfg-label { margin-right: 4px; }
             .presets { display: flex; flex-wrap: wrap; gap: 8px; }
             .time-row { display: flex; align-items: center; gap: 6px; margin: 8px 0 14px; }
             .time-row input { width: 72px; }
@@ -331,7 +341,7 @@ def create_layout():
                 dcc.RadioItems(id='main-tabs', className='nav', options=nav_options(t), value='dashboard'),
             ]),
             html.Div(className='topbar-right', children=[
-                html.Span(id='status-summary', className='summary'),
+                html.Button(id='status-summary', className='summary summary-btn', n_clicks=0, title=t['alarms_open']),
                 dcc.RadioItems(id='view-toggle', className='seg', options=view_options(t),
                                value=settings.get('dashboard_view')),
                 dcc.Dropdown(id='language-selector', className='lang', clearable=False, searchable=False,
@@ -397,6 +407,17 @@ def create_layout():
                 ]),
                 html.Div(className='panel-body', children=dcc.Graph(
                     id='wood-chart', config={'displaylogo': False, 'displayModeBar': False})),
+            ]),
+
+            # Alarmvenster: actieve alarmen en waarschuwingen, dempen per sensor + grootheid
+            html.Div(id='alarm-modal', className='modal-backdrop', style={'display': 'none'}, children=[
+                html.Div(className='modal modal-wide', role='dialog', **{'aria-modal': 'true', 'aria-labelledby': 'alarm-title'},
+                         children=[
+                    html.H3(t['alarms_title'], id='alarm-title'),
+                    html.Button('✕', id='close-alarm-modal', n_clicks=0, className='btn btn-link modal-close',
+                                title=t['btn_close']),
+                    html.Div(id='alarm-list'),
+                ]),
             ]),
 
             # Keuzevenster voor de historische periode
