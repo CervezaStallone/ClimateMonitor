@@ -1,4 +1,5 @@
 """Settings tab: formulier opgebouwd uit settings.SCHEMA, Modbus bussen/devices, opslaan, wachtwoord wijzigen."""
+import json
 import time
 from urllib.parse import quote
 from zoneinfo import available_timezones
@@ -11,6 +12,7 @@ import devices
 import layout
 import mqtt_publisher
 import settings
+import zones
 from translations import LANGUAGE_NAMES, TRANSLATIONS
 
 SECTIONS = ['display', 'modbus', 'notify', 'alerts', 'wood', 'mqtt', 'regional', 'data', 'server', 'security']
@@ -23,8 +25,11 @@ DEVICE_COLUMNS = ['name', 'bus', 'slave_id', 'function_code', 'register_temp', '
 BYTE_ORDER_LABELS = {'ABCD': 'ABCD · big endian', 'DCBA': 'DCBA · little endian', 'BADC': 'BADC · byte swap',
                      'CDAB': 'CDAB · word swap'}
 RULE_COLUMNS = ['scope', 'metric', 'level', 'min_value', 'max_value', 'enabled']
-TABLE_COLUMNS = {'buses': BUS_COLUMNS, 'devices': DEVICE_COLUMNS, 'rules': RULE_COLUMNS}
-WIDE_FIELDS = {'name', 'port', 'bus', 'scope', 'metric', 'byte_order'}   # twee kolommen breed
+ZONE_COLUMNS = ['name', 'scope', 'mode', 'level', 'color', 'temp_min', 'temp_max', 'rh_min', 'rh_max', 'enabled']
+RECT_FIELDS = ['temp_min', 'temp_max', 'rh_min', 'rh_max']
+TABLE_COLUMNS = {'buses': BUS_COLUMNS, 'devices': DEVICE_COLUMNS, 'rules': RULE_COLUMNS, 'zones': ZONE_COLUMNS}
+HIDDEN_FIELDS = {'zones': ['shape', 'points']}   # meegestuurd zonder zichtbaar veld (getekende vorm)
+WIDE_FIELDS = {'name', 'port', 'bus', 'scope', 'metric', 'byte_order', 'mode'}   # twee kolommen breed
 
 _TIMEZONES = sorted(available_timezones())
 
@@ -74,7 +79,11 @@ def _field(key, value, t):
 
 
 def table_rows(table):
-    """Opgeslagen bussen, sensoren of grenswaarden als formulierregels (aan/uit als 'true'/'false')."""
+    """Opgeslagen bussen, sensoren, grenswaarden of zones als formulierregels (aan/uit als 'true'/'false')."""
+    if table == 'zones':
+        return [{'id': None, 'scope': z['device_id'] or 0, 'name': z['name'], 'mode': z['mode'], 'level': z['level'],
+                 'color': z['color'], 'shape': z['shape'], 'points': json.dumps(z['points']),
+                 **{f: z[f] for f in RECT_FIELDS}, 'enabled': 'true' if z['enabled'] else 'false'} for z in zones.load()]
     if table == 'rules':
         return [{'id': None, 'scope': r['device_id'] or 0, 'metric': r['metric'], 'level': r['level'],
                  'min_value': r['min_value'], 'max_value': r['max_value'], 'enabled': 'true' if r['enabled'] else 'false'}
@@ -119,6 +128,11 @@ def _choices(table, field, t, bus_names):
         return [{'label': t[alerts.METRICS[m][0]], 'value': m} for m in alerts.METRICS]
     if field == 'level':
         return [{'label': t[f'opt_level_{v}'], 'value': v} for v in alerts.LEVELS]
+    if field == 'mode':
+        return [{'label': t[f'opt_mode_{v}'], 'value': v} for v in zones.MODES]
+    if field == 'color':
+        return [{'label': html.Span([html.Span(className='swatch', style={'--series': hex_color}), t[f'opt_color_{v}']],
+                                    className='color-option'), 'value': v} for v, hex_color in zones.COLORS.items()]
     return None
 
 
@@ -143,10 +157,16 @@ def row_form(table, rows, t, bus_names=None):
         bus_names = [b['name'] for b in devices.load_config()[0]]
     items = []
     for index, row in enumerate(rows):
-        cells = [dcc.Input(id={'type': 'cfg', 'table': table, 'row': index, 'field': 'id'}, type='hidden',
-                           value=row.get('id'))]
+        cells = [dcc.Input(id={'type': 'cfg', 'table': table, 'row': index, 'field': field}, type='hidden',
+                           value=row.get(field)) for field in ['id'] + HIDDEN_FIELDS.get(table, [])]
         for field in TABLE_COLUMNS[table]:
             cell_id = {'type': 'cfg-cell', 'table': table, 'row': index, 'field': field}
+            if row.get('shape') == 'polygon' and field in RECT_FIELDS:
+                if field == RECT_FIELDS[0]:   # getekende vorm: één vak in plaats van vier min/max-velden
+                    cells.append(html.Div(id=cell_id, className='cfg-cell wide', children=[
+                        html.Span(t['col_shape'], className='cfg-label'),
+                        html.Span(t['zone_free_shape'], className='cfg-static')]))
+                continue
             control = _control(table, index, field, row.get(field), t, bus_names)
             # Label om het veld heen (koppeling zonder id); het vinkje heeft al een eigen label
             wrapper = html.Div if field == 'enabled' else html.Label
@@ -181,6 +201,10 @@ def _new_row(table, rows, bus_names):
                 'slave_id': next(i for i in range(1, 248) if i not in used), 'function_code': 4, 'register_temp': 1,
                 'register_humidity': 2, 'data_type': 'int16', 'byte_order': 'ABCD', 'scale_temp': 0.1,
                 'scale_humidity': 0.1, 'offset_temp': 0, 'offset_humidity': 0, 'enabled': 'true'}
+    if table == 'zones':
+        return {'id': None, 'scope': 0, 'name': f'Zone {len(rows) + 1}', 'mode': 'keep_inside', 'level': 'warning',
+                'color': 'green', 'shape': 'rect', 'points': None, 'temp_min': 18, 'temp_max': 24, 'rh_min': 40,
+                'rh_max': 60, 'enabled': 'true'}
     return {'id': None, 'scope': 0, 'metric': 'temperature', 'level': 'alarm', 'min_value': None, 'max_value': None,
             'enabled': 'true'}
 
@@ -242,6 +266,11 @@ def _alerts_section(t):
         html.Div(id='rules-form', className='cfg-list', children=row_form('rules', table_rows('rules'), t)),
         html.Button(t['btn_add_rule'], id='add-rule', n_clicks=0, className='btn btn-small'),
         html.Div(id='rule-errors', className='field-error'),
+        html.H4(t['table_zones']),
+        html.Div(t['hint_zones'], className='field-hint'),
+        html.Div(id='zones-form', className='cfg-list', children=row_form('zones', table_rows('zones'), t)),
+        html.Button(t['btn_add_zone'], id='add-zone', n_clicks=0, className='btn btn-small'),
+        html.Div(id='zone-errors', className='field-error'),
         html.H4(t['lbl_alert_log']),
         html.Div(id='alert-log', children=alert_log_list(t)),
     ]
@@ -375,22 +404,24 @@ def register_settings_callbacks(app):
          State('selected-language', 'data'),
          State(_fields('buses'), 'value'),
          State(_fields('devices'), 'value'),
-         State(_fields('rules'), 'value')],
+         State(_fields('rules'), 'value'),
+         State(_fields('zones'), 'value')],
         prevent_initial_call=True
     )
-    def save_settings(n_clicks, values, lang, bus_values, device_values, rule_values):
+    def save_settings(n_clicks, values, lang, bus_values, device_values, rule_values, zone_values):
         t = _t(lang)
         ok_style = {'marginTop': '10px', 'fontWeight': 'bold', 'color': 'var(--ok)'}
         bad_style = {'marginTop': '10px', 'fontWeight': 'bold', 'color': 'var(--alarm)'}
         if not auth.is_logged_in():
             return no_update, t['settings_locked'], bad_style
         keys = [item['id']['key'] for item in callback_context.states_list[0]]
-        bus_rows, device_rows, rule_rows = (collect(callback_context.states_list[i]) for i in (2, 3, 4))
+        bus_rows, device_rows, rule_rows, zone_rows = (collect(callback_context.states_list[i]) for i in (2, 3, 4, 5))
 
-        # Eerst de Modbus configuratie valideren, zodat bij een fout niets wordt opgeslagen
+        # Eerst de Modbus configuratie, grenswaarden en zones valideren, zodat bij een fout niets wordt opgeslagen
         _, _, modbus_errors = devices.validate_config(bus_rows or [], device_rows or [])
         _, rule_errors = alerts.validate_rules(rule_rows or [])
-        if modbus_errors or rule_errors:
+        _, zone_errors = zones.validate(zone_rows or [])
+        if modbus_errors or rule_errors or zone_errors:
             return [''] * len(keys), t['msg_save_failed'], bad_style
 
         submitted = dict(zip(keys, values))
@@ -400,7 +431,8 @@ def register_settings_callbacks(app):
         if errors:
             return field_errors, t['msg_save_failed'], bad_style
         devices.save_config(bus_rows or [], device_rows or [])
-        alerts.save_rules(rule_rows or [])
+        zones.save(zone_rows or [])
+        alerts.save_rules(rule_rows or [])   # na de zones: wist ook de alarmtoestand (zone-id's zijn nieuw)
 
         restart_changed = any(settings.SCHEMA[k].get('restart') and settings.get(k) != before[k] for k in keys)
         message = t['msg_saved_restart'] if restart_changed else t['msg_saved']
@@ -409,42 +441,49 @@ def register_settings_callbacks(app):
     @app.callback(
         [Output('modbus-errors', 'children'),
          Output('rule-errors', 'children'),
+         Output('zone-errors', 'children'),
          Output('buses-form', 'children', allow_duplicate=True),
          Output('devices-form', 'children', allow_duplicate=True),
          Output('rules-form', 'children', allow_duplicate=True),
+         Output('zones-form', 'children', allow_duplicate=True),
          Output({'type': 'cfg-cell', 'table': ALL, 'row': ALL, 'field': ALL}, 'className')],
         Input('settings-status', 'children'),   # na save_settings: anders kan het herladen vóór het opslaan lopen
         [State(_fields('buses'), 'value'),
          State(_fields('devices'), 'value'),
          State(_fields('rules'), 'value'),
+         State(_fields('zones'), 'value'),
          State('selected-language', 'data')],
         prevent_initial_call=True
     )
-    def show_modbus_errors(status, bus_values, device_values, rule_values, lang):
+    def show_modbus_errors(status, bus_values, device_values, rule_values, zone_values, lang):
         """Markeer foute velden; na succesvol opslaan de formulieren herladen (nieuwe regels krijgen een id)."""
         t = _t(lang)
         if not auth.is_logged_in():
-            return (no_update,) * 6
-        bus_rows, device_rows, rule_rows = (collect(callback_context.states_list[i]) for i in (0, 1, 2))
+            return (no_update,) * 8
+        bus_rows, device_rows, rule_rows, zone_rows = (collect(callback_context.states_list[i]) for i in (0, 1, 2, 3))
         _, _, errors = devices.validate_config(bus_rows, device_rows)
         _, rule_errors = alerts.validate_rules(rule_rows)
+        _, zone_errors = zones.validate(zone_rows)
         if rule_errors:
             errors = {**errors, 'rules': rule_errors}
-        messages = {'modbus': [], 'rules': []}
-        for table in ('buses', 'devices', 'rules'):
+        if zone_errors:
+            errors = {**errors, 'zones': zone_errors}
+        messages = {'modbus': [], 'rules': [], 'zones': []}
+        for table in ('buses', 'devices', 'rules', 'zones'):
             for row, fields in errors.get(table, {}).items():
                 for field, code in fields.items():
-                    messages['rules' if table == 'rules' else 'modbus'].append(html.Li(t['row_error'].format(
+                    messages[table if table in ('rules', 'zones') else 'modbus'].append(html.Li(t['row_error'].format(
                         table=t[f'table_{table}'], row=row + 1, field=t[f'col_{field}'], error=t.get(code, code))))
         cells = callback_context.outputs_list[-1]
         classes = [_cell_class(c['id']['field'], c['id']['field'] in errors.get(c['id']['table'], {}).get(c['id']['row'], {}))
                    for c in cells]
         modbus_text = html.Ul(messages['modbus']) if messages['modbus'] else ''
         rules_text = html.Ul(messages['rules']) if messages['rules'] else ''
+        zones_text = html.Ul(messages['zones']) if messages['zones'] else ''
         if errors or status not in (t['msg_saved'], t['msg_saved_restart']):
-            return modbus_text, rules_text, no_update, no_update, no_update, classes
-        return ('', '', row_form('buses', table_rows('buses'), t), row_form('devices', table_rows('devices'), t),
-                row_form('rules', table_rows('rules'), t), classes)
+            return modbus_text, rules_text, zones_text, no_update, no_update, no_update, no_update, classes
+        return ('', '', '', row_form('buses', table_rows('buses'), t), row_form('devices', table_rows('devices'), t),
+                row_form('rules', table_rows('rules'), t), row_form('zones', table_rows('zones'), t), classes)
 
     def edit_rows(table, t, bus_names):
         """Regel toevoegen of verwijderen; de rest van het formulier houdt de (nog niet opgeslagen) invoer."""
@@ -497,6 +536,19 @@ def register_settings_callbacks(app):
         if not auth.is_logged_in():
             return no_update
         return edit_rows('rules', _t(lang), bus_names=[])
+
+    @app.callback(
+        Output('zones-form', 'children'),
+        [Input('add-zone', 'n_clicks'),
+         Input({'type': 'cfg-remove', 'table': 'zones', 'row': ALL}, 'n_clicks')],
+        [State(_fields('zones'), 'value'),
+         State('selected-language', 'data')],
+        prevent_initial_call=True
+    )
+    def edit_zones(n_clicks, remove_clicks, values, lang):
+        if not auth.is_logged_in():
+            return no_update
+        return edit_rows('zones', _t(lang), bus_names=[])
 
     @app.callback(
         Output({'type': 'cfg', 'table': 'devices', 'row': ALL, 'field': 'bus'}, 'options'),

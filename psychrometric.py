@@ -332,4 +332,6 @@ def add_zones(fig, zone_list):
         fig.add_trace(go.Scatter(x=temps + temps[:1], y=ratios + ratios[:1], mode='lines', fill='toself',
                                  name=zone['name'], fillcolor=zones.fill_color(zone['color']),
                                  line=dict(color=color, width=1.5), hoverinfo='skip'))
+    if zone_list:   # zones onder de sensorpunten en lijnen leggen
+        fig.data = fig.data[-len(zone_list):] + fig.data[:-len(zone_list)]
     return fig

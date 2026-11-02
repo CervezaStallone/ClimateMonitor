@@ -66,6 +66,7 @@ A real-time climate monitoring dashboard for Modbus RTU temperature and humidity
   - Comfort Score (0-6, based on Humidex)
 - **Psychrometric chart**: Mollier diagram with live indicator and comfort zone visualization
 - **Wood moisture** (optional): equilibrium moisture content per sensor, a diagram with zones from your limits, warning and alarm levels
+- **Zones**: your own coloured areas of temperature × humidity in the Mollier and wood diagram (from min/max or drawn freely), with a notification when a sensor leaves a desired zone or enters a danger zone
 - **Historical data replay**: Time-travel through data with preset buttons or custom date/time selection
 - **Interactive slider**: Live updates while dragging for smooth historical navigation
 - **Scientific analysis**: Humidex formula according to Environment Canada standard
@@ -333,7 +334,7 @@ Open the **Settings** tab in the web app. The first visit asks you to create an 
 | Modbus buses and sensors | Poll interval, buses (RS-485 interfaces), sensors (Modbus slaves) with data type (int16, uint16, int32, uint32, float32), byte order (ABCD, DCBA, BADC, CDAB) and a temperature and humidity correction for calibration |
 | Notifications: channels | Telegram bot token and chat ID, SMTP server, sender and recipients, test buttons |
 | MQTT | Broker, port, TLS, login, client ID, topic prefix, publish interval, QoS, retain, test button |
-| Notifications: limits | Limits per quantity (all sensors or one sensor) at warning or alarm level, alarm delay, hysteresis, recovery and offline alerts |
+| Notifications: limits | Limits per quantity (all sensors or one sensor) at warning or alarm level, zones (desired or danger zone, colour, per sensor), alarm delay, hysteresis, recovery and offline alerts |
 | Wood moisture | Correction for the wood species (% points), response time of the wood (hours), hysteresis |
 | Region and language | Timezone, default language |
 | Data | Data retention (days, 0 = forever), debug logging |

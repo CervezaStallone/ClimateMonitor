@@ -228,6 +228,9 @@ HTML_TEMPLATE = '''
             .cfg-remove { justify-self: start; padding: 8px 0; }
             .cfg-remove:hover { color: var(--alarm); }
             .cfg-empty { padding: 14px 0; color: var(--muted); font-size: 13px; border-bottom: 1px solid var(--line); }
+            .cfg-static { padding: 8px 0; color: var(--muted); font-size: 13px; }
+            .color-option { display: inline-flex; align-items: center; gap: 8px; }
+            .color-option .swatch { width: 12px; height: 12px; border-radius: 2px; }
 
             .site-footer { text-align: center; padding: 8px 16px 28px; font-size: 12px; color: var(--muted); }
             .site-footer a { color: var(--muted); text-underline-offset: 3px; }

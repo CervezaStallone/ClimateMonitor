@@ -499,19 +499,20 @@ def test_settings_callbacks_require_login():
         assert callbacks['edit_devices'](1, [], [], [], 'nl') is dash.no_update
         assert callbacks['update_bus_choices'](['Bus 1']) is dash.no_update
         assert callbacks['refresh_device_status'](3, 'settings', 'nl') is dash.no_update
-        assert all(v is dash.no_update for v in callbacks['show_modbus_errors'](1, [], [], [], 'nl'))
-        errors, status, _ = callbacks['save_settings'](1, [], 'nl', [], [], [])
+        assert all(v is dash.no_update for v in callbacks['show_modbus_errors'](1, [], [], [], [], 'nl'))
+        errors, status, _ = callbacks['save_settings'](1, [], 'nl', [], [], [], [])
         assert errors is dash.no_update and status == TRANSLATIONS_NL['settings_locked']
         assert callbacks['change_password'](1, 'x', 'y', 'y', 'nl')[0] == TRANSLATIONS_NL['settings_locked']
         assert 'admin' not in str(callbacks['show_settings']('settings', 'nl'))   # alleen het inlogscherm
         assert callbacks['edit_rules'](1, [], [], 'nl') is dash.no_update
+        assert callbacks['edit_zones'](1, [], [], 'nl') is dash.no_update
         assert callbacks['send_test'](1, 0, [], 'nl') == TRANSLATIONS_NL['settings_locked']
         assert callbacks['refresh_alert_log'](5, 'settings', 'nl') is dash.no_update
         assert callbacks['test_mqtt'](1, [], 'nl') == TRANSLATIONS_NL['settings_locked']
         assert callbacks['refresh_mqtt_status'](3, 'settings', 'nl') is dash.no_update
     assert set(callbacks) >= {'edit_buses', 'edit_devices', 'update_bus_choices', 'refresh_device_status',
                               'show_modbus_errors', 'save_settings', 'change_password', 'show_settings',
-                              'edit_rules', 'send_test', 'refresh_alert_log', 'test_mqtt', 'refresh_mqtt_status'}
+                              'edit_rules', 'edit_zones', 'send_test', 'refresh_alert_log', 'test_mqtt', 'refresh_mqtt_status'}
 
 
 def components(node):
@@ -539,6 +540,27 @@ def test_config_forms_round_trip():
     assert rows['devices'][0]['id'] == names['Koelcel']['id']
     assert devices.validate_config(rows['buses'], rows['devices'])[2] == {}
     assert alerts.validate_rules(rows['rules'])[1] == {} and rows['rules'][0]['level'] == 'warning'
+
+
+def test_zone_form_round_trip():
+    """Zones in Settings: rechthoek via min/max-velden, getekende vorm blijft behouden (geen min/max-velden)."""
+    import settings_ui
+    import zones
+    from dash import html
+    setup_alerts([])
+    assert zones.save([
+        {'scope': 0, 'name': 'Comfort', 'color': 'green', 'mode': 'keep_inside', 'level': 'warning',
+         'temp_min': 18, 'temp_max': 24, 'rh_min': 40, 'rh_max': 60, 'enabled': 'true'},
+        {'scope': 0, 'name': 'Getekend', 'color': 'red', 'mode': 'keep_outside', 'level': 'alarm', 'shape': 'polygon',
+         'points': '[[10, 80], [30, 85], [20, 95]]', 'enabled': 'true'}]) == {}
+    form = html.Div(settings_ui.row_form('zones', settings_ui.table_rows('zones'), TRANSLATIONS['nl']))
+    fields = [c for c in components(form) if isinstance(getattr(c, 'id', None), dict) and c.id.get('type') == 'cfg']
+    assert not any(c.id['row'] == 1 and c.id['field'] == 'temp_min' for c in fields)
+    assert TRANSLATIONS_NL['zone_free_shape'] in str(form)
+    rows = settings_ui.collect([{'id': c.id, 'value': c.value} for c in fields])
+    assert zones.save(rows) == {}
+    assert [z['points'] for z in zones.load()] == [[[18.0, 40.0], [24.0, 40.0], [24.0, 60.0], [18.0, 60.0]],
+                                                   [[10.0, 80.0], [30.0, 85.0], [20.0, 95.0]]]
 
 
 def test_sensor_form_has_data_type_and_byte_order():
