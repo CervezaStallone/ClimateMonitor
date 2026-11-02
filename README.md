@@ -100,7 +100,11 @@ A real-time climate monitoring dashboard for Modbus RTU temperature and humidity
 
 #### Mollier diagram
 ![Mollier diagram](img/mollier.png)
-*Current state of every sensor in its own colour, with saturation line, RH curves and comfort zone.*
+*Current state of every sensor in its own colour, with saturation line, RH curves, comfort zone and your own zones (here a desired comfort zone and a mould-risk danger zone).*
+
+#### Wood moisture
+![Wood moisture diagram](img/wood-diagram.png)
+*Equilibrium wood moisture: lines of equal wood moisture, the 18 % warning and 20 % alarm limits and the zones.*
 
 #### Historical replay
 ![Historical range](img/history-range.png)
