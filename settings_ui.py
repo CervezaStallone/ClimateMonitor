@@ -10,6 +10,7 @@ import alerts
 import auth
 import devices
 import layout
+import modbus_reader
 import mqtt_publisher
 import settings
 import zones
@@ -224,6 +225,15 @@ def _modbus_section(t):
         html.Div(id='modbus-errors', className='field-error'),
         html.H4(t['lbl_device_status']),
         html.Div(id='device-status', children=device_status_list(t)),
+        html.H4(t['lbl_scan']),
+        html.Div(t['hint_scan'], className='field-hint'),
+        html.Div(className='draw-actions', children=[
+            dcc.Dropdown(id='scan-bus-select', options=[b['name'] for b in devices.load_config()[0]],
+                         value=next((b['name'] for b in devices.load_config()[0]), None), clearable=False,
+                         searchable=False, style={'minWidth': '200px'}),
+            html.Button(t['btn_scan'], id='scan-bus-btn', n_clicks=0, className='btn btn-small'),
+        ]),
+        dcc.Loading(html.Div(id='scan-result', className='status-list'), type='dot'),
     ]
 
 
@@ -573,6 +583,31 @@ def register_settings_callbacks(app):
         if tab != 'settings' or n % 3 or not auth.is_logged_in():
             return no_update
         return device_status_list(_t(lang))
+
+    @app.callback(
+        Output('scan-result', 'children'),
+        Input('scan-bus-btn', 'n_clicks'),
+        [State('scan-bus-select', 'value'),
+         State('selected-language', 'data')],
+        prevent_initial_call=True
+    )
+    def scan_bus_now(n_clicks, bus_name, lang):
+        """Welke slaves antwoorden op een opgeslagen bus (alleen ingelogd: opent de seriële poort)."""
+        t = _t(lang)
+        if not auth.is_logged_in():
+            return t['settings_locked']
+        bus = next((b for b in devices.load_config()[0] if b['name'] == bus_name), None)
+        if bus is None:
+            return no_update
+        try:
+            found = modbus_reader.scan_bus(bus, range(1, 31))
+        except Exception as e:   # interface weg of in gebruik door een ander programma
+            return html.Span(t['scan_failed'].format(error=e), style={'color': 'var(--alarm)'})
+        if not found:
+            return t['scan_none']
+        return html.Ul([html.Li(t['scan_found_error'].format(slave=f['slave_id'], error=f['error']) if 'error' in f
+                                else t['scan_found'].format(slave=f['slave_id'], temperature=f'{f["temperature"]:.1f}',
+                                                            humidity=f'{f["humidity"]:.1f}')) for f in found])
 
     @app.callback(
         Output('test-status', 'children'),

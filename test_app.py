@@ -429,6 +429,72 @@ def test_poller_reads_signed_scaled_values_and_isolates_failures():
     assert 'no answer' in devices.status(2)['error'] and 'out of range' in devices.status(3)['error']
 
 
+def test_scan_bus_finds_responding_slaves():
+    """Scan: welke slave-adressen antwoorden (met waarden), zonder het uitlezen van dezelfde poort te storen."""
+    sensors = {1: FakeInstrument({1: 182, 2: 667}), 5: FakeInstrument({1: -12, 2: 900})}
+    opened = []
+
+    def factory(bus_cfg, dev):
+        opened.append(dev['slave_id'])
+        return sensors.get(dev['slave_id'], FakeInstrument(fail=True))
+    found = modbus_reader.scan_bus({**bus(), 'id': 1}, range(1, 7), factory)
+    assert opened == [1, 2, 3, 4, 5, 6]
+    assert found == [{'slave_id': 1, 'temperature': 18.2, 'humidity': 66.7},
+                     {'slave_id': 5, 'temperature': -1.2, 'humidity': 90.0}]
+    assert not modbus_reader.port_lock('/dev/ttyUSB0').locked()
+
+
+def test_poller_waits_while_port_is_scanned():
+    fresh_settings()
+    q = queue.Queue()
+    lock = modbus_reader.port_lock('/dev/ttyUSB0')
+    poller = modbus_reader.BusPoller({**bus(), 'id': 1}, [{**device(), 'id': 1}], q,
+                                     lambda bus_cfg, dev: FakeInstrument({1: 200, 2: 500}))
+    with lock:                                   # scan bezig
+        poller.start()
+        time.sleep(0.6)
+        assert q.empty() and '/dev/ttyUSB0' in modbus_reader._active_ports
+    time.sleep(0.6)
+    poller.stop()
+    poller.join(timeout=3)
+    assert not q.empty() and '/dev/ttyUSB0' not in modbus_reader._active_ports
+
+
+def test_scan_button_requires_login_and_lists_results():
+    import dash
+    import settings_ui
+    fresh_settings()
+    devices.init_devices()
+    app = dash.Dash(__name__, suppress_callback_exceptions=True)
+    settings_ui.register_settings_callbacks(app)
+    scan = next(e['callback'].__wrapped__ for e in app.callback_map.values()
+                if getattr(e['callback'], '__wrapped__', None) and e['callback'].__wrapped__.__name__ == 'scan_bus_now')
+    original_scan, original_login = modbus_reader.scan_bus, auth.is_logged_in
+    calls = []
+    modbus_reader.scan_bus = lambda bus_cfg, ids: calls.append(bus_cfg['port']) or [
+        {'slave_id': 1, 'temperature': 18.2, 'humidity': 66.7}, {'slave_id': 3, 'error': 'Illegal data address'}]
+    try:
+        with app.server.test_request_context():
+            assert scan(1, 'Bus 1', 'nl') == TRANSLATIONS_NL['settings_locked'] and calls == []
+            auth.is_logged_in = lambda: True
+            result = str(scan(1, 'Bus 1', 'nl'))
+    finally:
+        modbus_reader.scan_bus, auth.is_logged_in = original_scan, original_login
+    assert calls == ['/dev/ttyTEST0'] and '18.2' in result and 'Illegal data address' in result
+
+
+def test_settings_page_has_scan_button():
+    import settings_ui
+    fresh_settings()
+    devices.init_devices()
+    original, auth.is_logged_in = auth.is_logged_in, lambda: True
+    try:
+        page = str(settings_ui.render_settings('nl'))
+    finally:
+        auth.is_logged_in = original
+    assert 'scan-bus-btn' in page and 'scan-bus-select' in page and 'scan-result' in page
+
+
 def test_poller_survives_missing_interface():
     fresh_settings()
     calls = []
@@ -1307,6 +1373,19 @@ def test_rule_hint_explains_levels():
 def test_comfort_uses_same_dewpoint_as_measurements():
     import callbacks
     assert callbacks.humidex_score(26, 30) == 4     # Magnus: humidex 26.0; de oude vuistregel gaf 28.3 (score 5)
+
+
+def test_wood_value_restarts_when_wood_settings_change():
+    """Andere correctie of reactietijd: niet dagenlang naar de nieuwe waarde kruipen, maar opnieuw beginnen."""
+    import wood
+    fresh_settings()
+    database.init_database()
+    wood._smooth.clear()
+    assert settings.save({'wood_response_hours': 24, 'wood_emc_offset': 0}) == {}
+    now = int(time.time())
+    assert abs(wood.update(1, 20, 65, now=now) - 12.0) < 0.2
+    assert settings.save({'wood_emc_offset': -2}) == {}
+    assert abs(wood.update(1, 20, 65, now=now + 60) - 10.0) < 0.2
 
 
 def test_warning_and_alarm_levels():

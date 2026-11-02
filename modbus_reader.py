@@ -99,6 +99,50 @@ def open_instrument(bus, device):
     return instrument
 
 
+_port_locks = {}                # poort -> Lock: poller en scan gebruiken dezelfde seriële verbinding om beurten
+_port_locks_guard = threading.Lock()
+_active_ports = set()           # poorten met een draaiende poller (scan sluit die niet)
+SCAN_TIMEOUT = 0.3              # seconden per adres tijdens een scan
+
+
+def port_lock(port):
+    with _port_locks_guard:
+        return _port_locks.setdefault(port, threading.Lock())
+
+
+def scan_bus(bus, slave_ids, instrument_factory=open_instrument):
+    """Welke slave-adressen antwoorden op de XY-MD02-registers (functiecode 4, register 1-2)?
+
+    Geeft [{'slave_id', 'temperature', 'humidity'}] of {'slave_id', 'error'} voor een slave die antwoordt maar
+    de registers niet kent. Wacht op de poller van dezelfde poort (zelfde verbinding), zodat antwoorden niet
+    door elkaar lopen. SerialException (interface weg) gaat door naar de aanroeper.
+    """
+    probe = {'function_code': 4, 'register_temp': 1, 'register_humidity': 2, 'scale_temp': 0.1, 'scale_humidity': 0.1,
+             'data_type': 'int16', 'byte_order': 'ABCD'}
+    found, instrument = [], None
+    with port_lock(bus['port']):
+        try:
+            for slave_id in slave_ids:
+                instrument = instrument_factory(bus, {**probe, 'slave_id': slave_id})
+                instrument.serial.timeout = SCAN_TIMEOUT
+                try:
+                    temperature, humidity = read_device(instrument, {**probe, 'slave_id': slave_id})
+                    found.append({'slave_id': slave_id, 'temperature': temperature, 'humidity': humidity})
+                except minimalmodbus.NoResponseError:
+                    continue
+                except minimalmodbus.ModbusException as e:   # antwoordt wel, maar andere registers/functiecode
+                    found.append({'slave_id': slave_id, 'error': str(e)})
+        finally:
+            if instrument is not None:
+                instrument.serial.timeout = bus['timeout']
+                if bus['port'] not in _active_ports:
+                    try:
+                        instrument.serial.close()
+                    except Exception:
+                        pass
+    return found
+
+
 class Writer(threading.Thread):
     """Schrijft metingen (timestamp, temp, rh, dauwpunt, abs. vochtigheid, device_id) in batches."""
 
@@ -164,6 +208,13 @@ class BusPoller(threading.Thread):
         self.stop_event.set()
 
     def run(self):
+        _active_ports.add(self.bus['port'])
+        try:
+            self.loop()
+        finally:
+            _active_ports.discard(self.bus['port'])
+
+    def loop(self):
         backoff = 1
         while not self.stop_event.is_set():
             instruments = {}
@@ -173,10 +224,11 @@ class BusPoller(threading.Thread):
                 backoff = 1
                 while not self.stop_event.is_set():
                     started = time.time()
-                    for device in self.devices:
-                        if self.stop_event.is_set():
-                            break
-                        self.poll(instruments[device['id']], device)
+                    with port_lock(self.bus['port']):   # een scan van deze poort gaat om beurten met het uitlezen
+                        for device in self.devices:
+                            if self.stop_event.is_set():
+                                break
+                            self.poll(instruments[device['id']], device)
                     interval = settings.get('poll_interval_seconds')
                     self.stop_event.wait(max(0, interval - (time.time() - started)))
             except (serial.SerialException, OSError) as e:

@@ -62,16 +62,18 @@ def update(device_id, temperature, humidity, now=None):
     now = now or time.time()
     live = float(value(temperature, humidity))
     hours = settings.get('wood_response_hours')
+    config = (hours, settings.get('wood_emc_offset'))
     with _lock:
         if not hours:
-            _smooth[device_id] = (now, live)
+            _smooth[device_id] = (now, live, config)
             return live
-        if device_id not in _smooth:
+        # Eerste meting, of andere correctie/reactietijd: opnieuw beginnen bij de historie (niet dagen laten kruipen)
+        if device_id not in _smooth or _smooth[device_id][2] != config:
             seed = _history_value(device_id, hours, now)
-            _smooth[device_id] = (now, live if seed is None else seed)
-        last, smooth = _smooth[device_id]
+            _smooth[device_id] = (now, live if seed is None else seed, config)
+        last, smooth, _ = _smooth[device_id]
         smooth += (live - smooth) * (1 - math.exp(-max(now - last, 0) / (hours * 3600)))
-        _smooth[device_id] = (now, smooth)
+        _smooth[device_id] = (now, smooth, config)
         return smooth
 
 
