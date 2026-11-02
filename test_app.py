@@ -1389,6 +1389,22 @@ def test_wood_value_restarts_when_wood_settings_change():
     assert abs(wood.update(1, 20, 65, now=now + 60) - 10.0) < 0.2
 
 
+def test_limits_shown_in_time_chart():
+    """Grenswaarden van de getoonde grootheid als lijnen in de tijdgrafiek (alleen die grootheid)."""
+    import callbacks
+    import pandas as pd
+    setup_alerts([{'scope': 0, 'metric': 'temperature', 'max_value': 8, 'level': 'alarm', 'enabled': 'true'},
+                  {'scope': 0, 'metric': 'temperature', 'min_value': 2, 'max_value': 6, 'level': 'warning',
+                   'enabled': 'true'},
+                  {'scope': 0, 'metric': 'humidity', 'max_value': 80, 'enabled': 'true'}])
+    df = pd.DataFrame({'timestamp': [1, 2], 'temperature': [5.0, 7.0], 'humidity': [60.0, 70.0], 'device_id': [1, 1]})
+    limits = callbacks.limit_rules('temperature', None)
+    fig = callbacks.metric_figure(df, {1: 'Kas'}, {}, 'temperature', TRANSLATIONS['nl'], 'dark', limits=limits)
+    lines = sorted((shape.y0, shape.line.color) for shape in fig.layout.shapes)
+    k = callbacks.THEMES['dark']
+    assert lines == [(2, k['warn']), (6, k['warn']), (8, k['alarm'])]
+
+
 def test_warning_and_alarm_levels():
     names = setup_alerts([{'scope': 0, 'metric': 'wood_emc', 'max_value': 18, 'level': 'warning', 'enabled': 'true'},
                           {'scope': 0, 'metric': 'wood_emc', 'max_value': 20, 'level': 'alarm', 'enabled': 'true'}])

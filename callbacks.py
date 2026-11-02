@@ -120,8 +120,11 @@ def humidex_score(temp, hum):
     return 0
 
 
-def metric_figure(df, names, colors, metric, t, mode):
-    """Eén grootheid, één lijn per sensor (of één sensor), in de kleuren van het thema."""
+def metric_figure(df, names, colors, metric, t, mode, limits=()):
+    """Eén grootheid, één lijn per sensor (of één sensor), in de kleuren van het thema.
+
+    limits: [(min, max, niveau)] uit de alarmregels, als gestippelde lijnen (geel = waarschuwing, rood = alarm).
+    """
     fig = go.Figure()
     unit = METRIC_UNITS[metric]
     for device_id, name in names.items():
@@ -140,6 +143,14 @@ def metric_figure(df, names, colors, metric, t, mode):
             else f'<b>{name}</b>: %{{y}}<extra></extra>'))
     style_figure(fig, mode)
     fig.update_layout(showlegend=len(fig.data) > 1)
+    k = THEMES[mode]
+    for low, high, level in limits:
+        color = k['warn'] if level == 'warning' else k['alarm']
+        for value in (low, high):
+            if value is not None:
+                fig.add_hline(y=value, line=dict(color=color, width=1.5, dash='dash'),
+                              annotation_text=f"{t['opt_level_' + level]} {value:g}", annotation_position='top left',
+                              annotation_font=dict(color=color, size=11))
     title = t[METRIC_KEYS[metric]] + (f' ({unit})' if unit else '')
     fig.update_yaxes(title_text=title)
     if metric == 'humidity':
@@ -149,13 +160,18 @@ def metric_figure(df, names, colors, metric, t, mode):
     return fig
 
 
-def wood_zones(device_id):
-    """Houtvochtgrenzen uit de alarmregels: [(min, max, niveau)] voor één sensor of de globale regels."""
+def limit_rules(metric, device_id):
+    """Grenzen van één grootheid uit de alarmregels: [(min, max, niveau)] voor één sensor of de globale regels."""
     if device_id:
         rules = alerts.effective_rules(device_id).values()
     else:
         rules = [r for r in alerts.load_rules() if r['enabled'] and r['device_id'] is None]
-    return [(r['min_value'], r['max_value'], r['level']) for r in rules if r['metric'] == 'wood_emc']
+    return [(r['min_value'], r['max_value'], r['level']) for r in rules if r['metric'] == metric]
+
+
+def wood_zones(device_id):
+    """Houtvochtgrenzen uit de alarmregels (voor het houtdiagram)."""
+    return limit_rules('wood_emc', device_id)
 
 
 def theme_mollier(fig, mode, point_color=None):
@@ -332,7 +348,7 @@ def register_callbacks(app):
             fig.update_yaxes(visible=False)
             return fig, count_text, stored_relayout
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s').dt.tz_localize('UTC').dt.tz_convert(settings.get('timezone')).dt.tz_localize(None)
-        fig = metric_figure(df, names, device_colors(mode), metric, t, mode)
+        fig = metric_figure(df, names, device_colors(mode), metric, t, mode, limit_rules(metric, device_filter))
         return fig, count_text, stored_relayout
 
     @app.callback(
