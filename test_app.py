@@ -472,25 +472,66 @@ def test_settings_callbacks_require_login():
         fn = getattr(entry['callback'], '__wrapped__', None)
         if fn:
             callbacks[fn.__name__] = fn
-    rows = [bus()]
     with app.server.test_request_context():
-        assert callbacks['add_bus'](1, rows) is dash.no_update
-        assert callbacks['add_device'](1, [], rows) is dash.no_update
-        assert callbacks['update_bus_choices'](rows, {}) is dash.no_update
+        assert callbacks['edit_buses'](1, [], [], 'nl') is dash.no_update
+        assert callbacks['edit_devices'](1, [], [], [], 'nl') is dash.no_update
+        assert callbacks['update_bus_choices'](['Bus 1']) is dash.no_update
         assert callbacks['refresh_device_status'](3, 'settings', 'nl') is dash.no_update
-        assert all(v is dash.no_update for v in callbacks['show_modbus_errors'](1, rows, [], 'nl', []))
-        errors, status, _ = callbacks['save_settings'](1, [], 'nl', rows, [], [])
+        assert all(v is dash.no_update for v in callbacks['show_modbus_errors'](1, [], [], [], 'nl'))
+        errors, status, _ = callbacks['save_settings'](1, [], 'nl', [], [], [])
         assert errors is dash.no_update and status == TRANSLATIONS_NL['settings_locked']
         assert callbacks['change_password'](1, 'x', 'y', 'y', 'nl')[0] == TRANSLATIONS_NL['settings_locked']
         assert 'admin' not in str(callbacks['show_settings']('settings', 'nl'))   # alleen het inlogscherm
-        assert callbacks['add_rule'](1, []) is dash.no_update
+        assert callbacks['edit_rules'](1, [], [], 'nl') is dash.no_update
         assert callbacks['send_test'](1, 0, [], 'nl') == TRANSLATIONS_NL['settings_locked']
         assert callbacks['refresh_alert_log'](5, 'settings', 'nl') is dash.no_update
         assert callbacks['test_mqtt'](1, [], 'nl') == TRANSLATIONS_NL['settings_locked']
         assert callbacks['refresh_mqtt_status'](3, 'settings', 'nl') is dash.no_update
-    assert set(callbacks) >= {'add_bus', 'add_device', 'update_bus_choices', 'refresh_device_status',
+    assert set(callbacks) >= {'edit_buses', 'edit_devices', 'update_bus_choices', 'refresh_device_status',
                               'show_modbus_errors', 'save_settings', 'change_password', 'show_settings',
-                              'add_rule', 'send_test', 'refresh_alert_log', 'test_mqtt', 'refresh_mqtt_status'}
+                              'edit_rules', 'send_test', 'refresh_alert_log', 'test_mqtt', 'refresh_mqtt_status'}
+
+
+def components(node):
+    """Alle Dash componenten in een boom."""
+    yield node
+    children = getattr(node, 'children', None)
+    for child in children if isinstance(children, (list, tuple)) else [children]:
+        if hasattr(child, 'to_plotly_json'):
+            yield from components(child)
+
+
+def test_config_forms_round_trip():
+    """Bussen, sensoren en regels zijn gewone formuliervelden; terug uitgelezen leveren ze dezelfde rijen."""
+    import settings_ui
+    from dash import html
+    names = setup_alerts([{'scope': 0, 'metric': 'humidity', 'max_value': 70, 'level': 'warning', 'enabled': 'true'}])
+    t = TRANSLATIONS['nl']
+    rows = {}
+    for table in ('buses', 'devices', 'rules'):
+        form = html.Div(settings_ui.row_form(table, settings_ui.table_rows(table), t))
+        assert not any(type(c).__name__ == 'DataTable' for c in components(form))
+        fields = [c for c in components(form) if isinstance(getattr(c, 'id', None), dict) and c.id.get('type') == 'cfg']
+        rows[table] = settings_ui.collect([{'id': c.id, 'value': c.value} for c in fields])
+    assert [d['name'] for d in rows['devices']] == ['Koelcel', 'Kas'] and rows['devices'][0]['enabled'] == 'true'
+    assert rows['devices'][0]['id'] == names['Koelcel']['id']
+    assert devices.validate_config(rows['buses'], rows['devices'])[2] == {}
+    assert alerts.validate_rules(rows['rules'])[1] == {} and rows['rules'][0]['level'] == 'warning'
+
+
+def test_tab_and_url_stay_in_sync():
+    """Terug naar het dashboard haalt ?tab=settings uit de adresbalk; F5 op settings blijft op settings."""
+    import dash
+    import settings_ui
+    fresh_settings()
+    app = dash.Dash(__name__, suppress_callback_exceptions=True)
+    settings_ui.register_settings_callbacks(app)
+    assert run_callback(app, 'main-tabs.value', '?tab=settings', 'dashboard', trigger='url.search') == \
+        ('settings', dash.no_update)
+    assert run_callback(app, 'main-tabs.value', '?tab=settings', 'dashboard', trigger='main-tabs.value') == \
+        (dash.no_update, '')
+    assert run_callback(app, 'main-tabs.value', '', 'settings', trigger='main-tabs.value') == \
+        (dash.no_update, '?tab=settings')
 
 
 # --- meldingen -----------------------------------------------------------------

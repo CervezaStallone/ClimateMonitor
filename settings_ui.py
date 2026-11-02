@@ -3,7 +3,7 @@ import time
 from urllib.parse import quote
 from zoneinfo import available_timezones
 
-from dash import ALL, Input, Output, State, callback_context, dash_table, dcc, html, no_update
+from dash import ALL, Input, Output, State, callback_context, dcc, html, no_update
 
 import alerts
 import auth
@@ -15,9 +15,14 @@ from translations import LANGUAGE_NAMES, TRANSLATIONS
 
 SECTIONS = ['display', 'modbus', 'notify', 'alerts', 'wood', 'mqtt', 'regional', 'data', 'server', 'security']
 
+# Bussen, sensoren en grenswaarden: één regel gewone formuliervelden per item (geen DataTable: daar verplaatsen
+# de pijltjestoetsen de cel in plaats van de cursor en zijn de keuzelijsten in cellen onbetrouwbaar)
 BUS_COLUMNS = ['name', 'port', 'baudrate', 'bytesize', 'parity', 'stopbits', 'timeout', 'enabled']
-DEVICE_COLUMNS = ['id', 'name', 'bus', 'slave_id', 'function_code', 'register_temp', 'register_humidity',
+DEVICE_COLUMNS = ['name', 'bus', 'slave_id', 'function_code', 'register_temp', 'register_humidity',
                   'scale_temp', 'scale_humidity', 'offset_temp', 'offset_humidity', 'enabled']
+RULE_COLUMNS = ['scope', 'metric', 'level', 'min_value', 'max_value', 'enabled']
+TABLE_COLUMNS = {'buses': BUS_COLUMNS, 'devices': DEVICE_COLUMNS, 'rules': RULE_COLUMNS}
+WIDE_FIELDS = {'name', 'port', 'bus', 'scope', 'metric'}   # twee kolommen breed
 
 _TIMEZONES = sorted(available_timezones())
 
@@ -66,73 +71,125 @@ def _field(key, value, t):
     ], className='field')
 
 
-def _yes_no(t):
-    return [{'label': t['opt_yes'], 'value': 'true'}, {'label': t['opt_no'], 'value': 'false'}]
+def table_rows(table):
+    """Opgeslagen bussen, sensoren of grenswaarden als formulierregels (aan/uit als 'true'/'false')."""
+    if table == 'rules':
+        return [{'id': None, 'scope': r['device_id'] or 0, 'metric': r['metric'], 'level': r['level'],
+                 'min_value': r['min_value'], 'max_value': r['max_value'], 'enabled': 'true' if r['enabled'] else 'false'}
+                for r in alerts.load_rules()]
+    buses, device_rows = devices.load_config()
+    return [{**{c: ('true' if r[c] else 'false') if isinstance(r.get(c), bool) else r.get(c) for c in TABLE_COLUMNS[table]},
+             'id': r['id']} for r in (buses if table == 'buses' else device_rows)]
 
 
-def _table_rows(rows, columns):
-    """Database rijen naar DataTable rijen (bool als 'true'/'false', id blijft mee voor bijwerken)."""
-    return [{**{c: ('true' if r[c] else 'false') if isinstance(r.get(c), bool) else r.get(c) for c in columns},
-             'id': r.get('id')} for r in rows]
+def collect(states):
+    """Formulierwaarden (callback_context.states_list) terug naar regels, in schermvolgorde."""
+    rows = {}
+    for item in states:
+        rows.setdefault(item['id']['row'], {})[item['id']['field']] = item.get('value')
+    result = []
+    for index in sorted(rows):
+        row = rows[index]
+        if 'enabled' in row:
+            row['enabled'] = 'true' if row['enabled'] else 'false'   # vinkje: ['on'] of []
+        row['id'] = row.get('id') or None
+        result.append(row)
+    return result
 
 
-def _bus_table(buses, t):
-    choices = {'baudrate': devices.BAUDRATES, 'bytesize': [7, 8], 'parity': ['N', 'E', 'O'], 'stopbits': [1, 2]}
-    return dash_table.DataTable(
-        id='bus-table',
-        columns=[{'id': c, 'name': t[f'col_{c}'], 'presentation': 'dropdown' if c in choices or c == 'enabled' else 'input',
-                  'type': 'numeric' if c == 'timeout' else 'any'} for c in BUS_COLUMNS],
-        data=_table_rows(buses, BUS_COLUMNS),
-        editable=True, row_deletable=True,
-        dropdown={**{c: {'options': [{'label': str(v), 'value': v} for v in opts], 'clearable': False}
-                     for c, opts in choices.items()},
-                  'enabled': {'options': _yes_no(t), 'clearable': False}},
-        **TABLE_STYLE)
+def _choices(table, field, t, bus_names):
+    """Keuzes voor een veld, None = vrij invoerveld."""
+    plain = {'baudrate': devices.BAUDRATES, 'bytesize': [7, 8], 'parity': ['N', 'E', 'O'], 'stopbits': [1, 2]}
+    if table == 'buses' and field in plain:
+        return [{'label': str(v), 'value': v} for v in plain[field]]
+    if field == 'bus':
+        return [{'label': n, 'value': n} for n in bus_names]
+    if field == 'function_code':
+        return [{'label': t[f'opt_function_code_{v}'], 'value': v} for v in (4, 3)]
+    if field == 'scope':
+        return [{'label': t['opt_all_devices'], 'value': 0}] + [
+            {'label': f"#{d['id']} {d['name']}", 'value': d['id']} for d in devices.list_devices()]
+    if field == 'metric':
+        return [{'label': t[alerts.METRICS[m][0]], 'value': m} for m in alerts.METRICS]
+    if field == 'level':
+        return [{'label': t[f'opt_level_{v}'], 'value': v} for v in alerts.LEVELS]
+    return None
 
 
-def _device_table(device_rows, bus_names, t):
-    return dash_table.DataTable(
-        id='device-table',
-        columns=[{'id': c, 'name': t[f'col_{c}'], 'editable': c != 'id',
-                  'presentation': 'dropdown' if c in ('bus', 'function_code', 'enabled') else 'input',
-                  'type': 'numeric' if c.startswith(('slave', 'register', 'scale', 'offset')) else 'any'} for c in DEVICE_COLUMNS],
-        data=_table_rows(device_rows, DEVICE_COLUMNS),
-        editable=True, row_deletable=True,
-        dropdown={'bus': {'options': [{'label': n, 'value': n} for n in bus_names], 'clearable': False},
-                  'function_code': {'options': [{'label': t['opt_function_code_3'], 'value': 3},
-                                                {'label': t['opt_function_code_4'], 'value': 4}], 'clearable': False},
-                  'enabled': {'options': _yes_no(t), 'clearable': False}},
-        **TABLE_STYLE)
+def _control(table, index, field, value, t, bus_names):
+    field_id = {'type': 'cfg', 'table': table, 'row': index, 'field': field}
+    options = _choices(table, field, t, bus_names)
+    if field == 'enabled':
+        return dcc.Checklist(id=field_id, options=[{'label': ' ' + t['lbl_enabled'], 'value': 'on'}],
+                             value=['on'] if str(value).lower() in ('true', '1') else [], className='cfg-switch')
+    if options is not None:
+        return dcc.Dropdown(id=field_id, options=options, value=value, clearable=False, searchable=False)
+    if field in ('name', 'port'):
+        # Poort: vrij tekstveld met de gevonden adapters als suggesties (datalist)
+        return dcc.Input(id=field_id, type='text', value=value, className='input', autoComplete='off', spellCheck=False,
+                         list='port-options' if field == 'port' else None)
+    return dcc.Input(id=field_id, type='number', value=value, step='any', className='input')
 
 
-# Actieve/geselecteerde cel in thema-kleuren (anders zet de DataTable er inline hotpink op)
-CELL_STATES = [{'if': {'state': state}, 'backgroundColor': 'var(--hover)', 'border': '1px solid var(--accent)'}
-               for state in ('active', 'selected')]
+def row_form(table, rows, t, bus_names=None):
+    """Formulierregels voor bussen, sensoren of grenswaarden."""
+    if bus_names is None:
+        bus_names = [b['name'] for b in devices.load_config()[0]]
+    items = []
+    for index, row in enumerate(rows):
+        cells = [dcc.Input(id={'type': 'cfg', 'table': table, 'row': index, 'field': 'id'}, type='hidden',
+                           value=row.get('id'))]
+        for field in TABLE_COLUMNS[table]:
+            cell_id = {'type': 'cfg-cell', 'table': table, 'row': index, 'field': field}
+            control = _control(table, index, field, row.get(field), t, bus_names)
+            # Label om het veld heen (koppeling zonder id); het vinkje heeft al een eigen label
+            wrapper = html.Div if field == 'enabled' else html.Label
+            cells.append(wrapper(id=cell_id, className=_cell_class(field), children=[
+                html.Span(t[f'col_{field}'], className='cfg-label'), control]))
+        cells.append(html.Button(t['btn_remove'], id={'type': 'cfg-remove', 'table': table, 'row': index}, n_clicks=0,
+                                 className='btn btn-link cfg-remove'))
+        items.append(html.Div(cells, className='cfg-row'))
+    return items or [html.Div(t['cfg_empty'], className='cfg-empty')]
 
-TABLE_STYLE = {
-    'style_data_conditional': CELL_STATES,
-    # Geen overflow op brede schermen: die knipt de keuzelijsten in de cellen af (alleen mobiel scrollt, zie layout.py)
-    'style_table': {'marginBottom': '10px'},
-    'style_cell': {'fontFamily': 'var(--sans)', 'fontSize': '14px', 'padding': '7px 8px', 'minWidth': '70px',
-                   'backgroundColor': 'var(--panel-2)', 'color': 'var(--text)', 'border': '1px solid var(--line)',
-                   'textAlign': 'left'},
-    'style_header': {'backgroundColor': 'var(--panel)', 'fontWeight': '600', 'color': 'var(--muted)',
-                     'border': '1px solid var(--line)', 'fontSize': '12px'},
-    'css': [{'selector': '.Select-menu-outer', 'rule': 'display: block !important'}],
-}
+
+def _fields(table):
+    """Pattern-matching id van alle velden (incl. verborgen id) van één formulier."""
+    return {'type': 'cfg', 'table': table, 'row': ALL, 'field': ALL}
+
+
+def _cell_class(field, invalid=False):
+    return 'cfg-cell' + (' wide' if field in WIDE_FIELDS else '') + (' is-invalid' if invalid else '')
+
+
+def _new_row(table, rows, bus_names):
+    """Nieuwe regel met handige standaardwaarden (vrije poort, vrij slave adres)."""
+    if table == 'buses':
+        used = {r.get('port') for r in rows}
+        port = next((p for p in devices.available_ports() if p not in used), '')
+        return {'id': None, 'name': f'Bus {len(rows) + 1}', 'port': port, 'baudrate': 9600, 'bytesize': 8,
+                'parity': 'N', 'stopbits': 1, 'timeout': 1.0, 'enabled': 'true'}
+    if table == 'devices':
+        bus_name = next((n for n in bus_names if n), '')
+        used = {r.get('slave_id') for r in rows if r.get('bus') == bus_name}
+        return {'id': None, 'name': f'Sensor {len(rows) + 1}', 'bus': bus_name,
+                'slave_id': next(i for i in range(1, 248) if i not in used), 'function_code': 4, 'register_temp': 1,
+                'register_humidity': 2, 'scale_temp': 0.1, 'scale_humidity': 0.1, 'offset_temp': 0,
+                'offset_humidity': 0, 'enabled': 'true'}
+    return {'id': None, 'scope': 0, 'metric': 'temperature', 'level': 'alarm', 'min_value': None, 'max_value': None,
+            'enabled': 'true'}
 
 
 def _modbus_section(t):
-    buses, device_rows = devices.load_config()
     ports = devices.available_ports()
     return [
+        html.Datalist(id='port-options', children=[html.Option(value=p) for p in ports]),
         html.H4(t['table_buses']),
-        _bus_table(buses, t),
+        html.Div(id='buses-form', className='cfg-list', children=row_form('buses', table_rows('buses'), t)),
         html.Div(t['hint_ports'].format(ports=', '.join(ports)) if ports else t['hint_no_ports'], className='field-hint'),
         html.Button(t['btn_add_bus'], id='add-bus', n_clicks=0, className='btn btn-small'),
         html.H4(t['table_devices']),
         html.Div(t['hint_registers'], className='field-hint'),
-        _device_table(device_rows, [b['name'] for b in buses], t),
+        html.Div(id='devices-form', className='cfg-list', children=row_form('devices', table_rows('devices'), t)),
         html.Button(t['btn_add_device'], id='add-device', n_clicks=0, className='btn btn-small'),
         html.Div(id='modbus-errors', className='field-error'),
         html.H4(t['lbl_device_status']),
@@ -172,34 +229,13 @@ def mqtt_status_text(t):
                      style={'color': 'var(--alarm)', 'fontWeight': 'bold'})
 
 
-def _rule_rows():
-    return [{'scope': r['device_id'] or 0, 'metric': r['metric'], 'level': r['level'], 'min_value': r['min_value'],
-             'max_value': r['max_value'], 'enabled': 'true' if r['enabled'] else 'false'} for r in alerts.load_rules()]
-
-
 def _alerts_section(t):
-    scopes = [{'label': t['opt_all_devices'], 'value': 0}] + [
-        {'label': f"#{d['id']} {d['name']}", 'value': d['id']} for d in devices.list_devices()]
-    metrics = [{'label': t[alerts.METRICS[m][0]], 'value': m} for m in alerts.METRICS]
     return [
         html.H4(t['table_rules']),
         html.Div(t['hint_rules'], className='field-hint'),
-        dash_table.DataTable(
-            id='alert-rule-table',
-            columns=[{'id': 'scope', 'name': t['col_scope'], 'presentation': 'dropdown'},
-                     {'id': 'metric', 'name': t['col_metric'], 'presentation': 'dropdown'},
-                     {'id': 'level', 'name': t['col_level'], 'presentation': 'dropdown'},
-                     {'id': 'min_value', 'name': t['col_min_value'], 'type': 'numeric'},
-                     {'id': 'max_value', 'name': t['col_max_value'], 'type': 'numeric'},
-                     {'id': 'enabled', 'name': t['col_enabled'], 'presentation': 'dropdown'}],
-            data=_rule_rows(), editable=True, row_deletable=True,
-            dropdown={'scope': {'options': scopes, 'clearable': False},
-                      'metric': {'options': metrics, 'clearable': False},
-                      'level': {'options': [{'label': t[f'opt_level_{v}'], 'value': v} for v in alerts.LEVELS],
-                                'clearable': False},
-                      'enabled': {'options': _yes_no(t), 'clearable': False}},
-            **TABLE_STYLE),
+        html.Div(id='rules-form', className='cfg-list', children=row_form('rules', table_rows('rules'), t)),
         html.Button(t['btn_add_rule'], id='add-rule', n_clicks=0, className='btn btn-small'),
+        html.Div(id='rule-errors', className='field-error'),
         html.H4(t['lbl_alert_log']),
         html.Div(id='alert-log', children=alert_log_list(t)),
     ]
@@ -302,11 +338,17 @@ def render_settings(lang):
 def register_settings_callbacks(app):
 
     @app.callback(
-        Output('main-tabs', 'value'),
-        Input('url', 'search')
+        [Output('main-tabs', 'value'),
+         Output('url', 'search')],
+        [Input('url', 'search'),
+         Input('main-tabs', 'value')]
     )
-    def select_tab_from_url(search):
-        return 'settings' if search and 'tab=settings' in search else no_update
+    def sync_tab_url(search, tab):
+        """Tab en adresbalk gelijk houden: ?tab=settings alleen zolang Settings open is (F5 blijft op de tab)."""
+        if callback_context.triggered_id == 'main-tabs':
+            wanted = '?tab=settings' if tab == 'settings' else ''
+            return no_update, wanted if (search or '') != wanted else no_update
+        return ('settings' if search and 'tab=settings' in search else no_update), no_update
 
     @app.callback(
         Output('settings-content', 'children'),
@@ -325,18 +367,19 @@ def register_settings_callbacks(app):
         Input('settings-save', 'n_clicks'),
         [State({'type': 'setting', 'key': ALL}, 'value'),
          State('selected-language', 'data'),
-         State('bus-table', 'data'),
-         State('device-table', 'data'),
-         State('alert-rule-table', 'data')],
+         State(_fields('buses'), 'value'),
+         State(_fields('devices'), 'value'),
+         State(_fields('rules'), 'value')],
         prevent_initial_call=True
     )
-    def save_settings(n_clicks, values, lang, bus_rows, device_rows, rule_rows):
+    def save_settings(n_clicks, values, lang, bus_values, device_values, rule_values):
         t = _t(lang)
         ok_style = {'marginTop': '10px', 'fontWeight': 'bold', 'color': 'var(--ok)'}
         bad_style = {'marginTop': '10px', 'fontWeight': 'bold', 'color': 'var(--alarm)'}
         if not auth.is_logged_in():
             return no_update, t['settings_locked'], bad_style
         keys = [item['id']['key'] for item in callback_context.states_list[0]]
+        bus_rows, device_rows, rule_rows = (collect(callback_context.states_list[i]) for i in (2, 3, 4))
 
         # Eerst de Modbus configuratie valideren, zodat bij een fout niets wordt opgeslagen
         _, _, modbus_errors = devices.validate_config(bus_rows or [], device_rows or [])
@@ -359,87 +402,107 @@ def register_settings_callbacks(app):
 
     @app.callback(
         [Output('modbus-errors', 'children'),
-         Output('bus-table', 'style_data_conditional'),
-         Output('device-table', 'style_data_conditional'),
-         Output('bus-table', 'data', allow_duplicate=True),
-         Output('device-table', 'data', allow_duplicate=True),
-         Output('alert-rule-table', 'style_data_conditional'),
-         Output('alert-rule-table', 'data', allow_duplicate=True)],
-        Input('settings-save', 'n_clicks'),
-        [State('bus-table', 'data'),
-         State('device-table', 'data'),
-         State('selected-language', 'data'),
-         State('alert-rule-table', 'data')],
+         Output('rule-errors', 'children'),
+         Output('buses-form', 'children', allow_duplicate=True),
+         Output('devices-form', 'children', allow_duplicate=True),
+         Output('rules-form', 'children', allow_duplicate=True),
+         Output({'type': 'cfg-cell', 'table': ALL, 'row': ALL, 'field': ALL}, 'className')],
+        Input('settings-status', 'children'),   # na save_settings: anders kan het herladen vóór het opslaan lopen
+        [State(_fields('buses'), 'value'),
+         State(_fields('devices'), 'value'),
+         State(_fields('rules'), 'value'),
+         State('selected-language', 'data')],
         prevent_initial_call=True
     )
-    def show_modbus_errors(n_clicks, bus_rows, device_rows, lang, rule_rows):
-        """Markeer foute cellen; na succesvol opslaan de tabellen herladen (nieuwe rijen krijgen een id)."""
+    def show_modbus_errors(status, bus_values, device_values, rule_values, lang):
+        """Markeer foute velden; na succesvol opslaan de formulieren herladen (nieuwe regels krijgen een id)."""
         t = _t(lang)
         if not auth.is_logged_in():
-            return (no_update,) * 7
-        _, _, errors = devices.validate_config(bus_rows or [], device_rows or [])
-        _, rule_errors = alerts.validate_rules(rule_rows or [])
+            return (no_update,) * 6
+        bus_rows, device_rows, rule_rows = (collect(callback_context.states_list[i]) for i in (0, 1, 2))
+        _, _, errors = devices.validate_config(bus_rows, device_rows)
+        _, rule_errors = alerts.validate_rules(rule_rows)
         if rule_errors:
             errors = {**errors, 'rules': rule_errors}
-        messages, styles = [], {'buses': list(CELL_STATES), 'devices': list(CELL_STATES), 'rules': list(CELL_STATES)}
+        messages = {'modbus': [], 'rules': []}
         for table in ('buses', 'devices', 'rules'):
             for row, fields in errors.get(table, {}).items():
                 for field, code in fields.items():
-                    messages.append(html.Li(t['row_error'].format(table=t[f'table_{table}'], row=row + 1,
-                                                                  field=t[f'col_{field}'], error=t.get(code, code))))
-                    styles[table].append({'if': {'row_index': row, 'column_id': field},
-                                          'backgroundColor': 'var(--alarm-cell)', 'color': 'var(--alarm)'})
-        if errors:
-            return html.Ul(messages), styles['buses'], styles['devices'], no_update, no_update, styles['rules'], no_update
-        buses, device_rows = devices.load_config()
-        return ('', CELL_STATES, CELL_STATES, _table_rows(buses, BUS_COLUMNS), _table_rows(device_rows, DEVICE_COLUMNS),
-                CELL_STATES, _rule_rows())
+                    messages['rules' if table == 'rules' else 'modbus'].append(html.Li(t['row_error'].format(
+                        table=t[f'table_{table}'], row=row + 1, field=t[f'col_{field}'], error=t.get(code, code))))
+        cells = callback_context.outputs_list[-1]
+        classes = [_cell_class(c['id']['field'], c['id']['field'] in errors.get(c['id']['table'], {}).get(c['id']['row'], {}))
+                   for c in cells]
+        modbus_text = html.Ul(messages['modbus']) if messages['modbus'] else ''
+        rules_text = html.Ul(messages['rules']) if messages['rules'] else ''
+        if errors or status not in (t['msg_saved'], t['msg_saved_restart']):
+            return modbus_text, rules_text, no_update, no_update, no_update, classes
+        return ('', '', row_form('buses', table_rows('buses'), t), row_form('devices', table_rows('devices'), t),
+                row_form('rules', table_rows('rules'), t), classes)
+
+    def edit_rows(table, t, bus_names):
+        """Regel toevoegen of verwijderen; de rest van het formulier houdt de (nog niet opgeslagen) invoer."""
+        rows = collect(callback_context.states_list[0])
+        trigger = callback_context.triggered_id
+        if isinstance(trigger, dict):
+            if not callback_context.triggered[0].get('value'):
+                return no_update   # nieuw getekende verwijderknop, geen klik
+            rows.pop(trigger['row'])
+        else:
+            rows.append(_new_row(table, rows, bus_names))
+        return row_form(table, rows, t, bus_names)
 
     @app.callback(
-        Output('bus-table', 'data'),
-        Input('add-bus', 'n_clicks'),
-        State('bus-table', 'data'),
+        Output('buses-form', 'children'),
+        [Input('add-bus', 'n_clicks'),
+         Input({'type': 'cfg-remove', 'table': 'buses', 'row': ALL}, 'n_clicks')],
+        [State(_fields('buses'), 'value'),
+         State('selected-language', 'data')],
         prevent_initial_call=True
     )
-    def add_bus(n_clicks, rows):
+    def edit_buses(n_clicks, remove_clicks, values, lang):
         if not auth.is_logged_in():
             return no_update
-        rows = rows or []
-        used = {r.get('port') for r in rows}
-        port = next((p for p in devices.available_ports() if p not in used), '')
-        return rows + [{'id': None, 'name': f'Bus {len(rows) + 1}', 'port': port, 'baudrate': 9600, 'bytesize': 8,
-                        'parity': 'N', 'stopbits': 1, 'timeout': 1.0, 'enabled': 'true'}]
+        return edit_rows('buses', _t(lang), bus_names=[])
 
     @app.callback(
-        Output('device-table', 'data'),
-        Input('add-device', 'n_clicks'),
-        [State('device-table', 'data'),
-         State('bus-table', 'data')],
+        Output('devices-form', 'children'),
+        [Input('add-device', 'n_clicks'),
+         Input({'type': 'cfg-remove', 'table': 'devices', 'row': ALL}, 'n_clicks')],
+        [State(_fields('devices'), 'value'),
+         State({'type': 'cfg', 'table': 'buses', 'row': ALL, 'field': 'name'}, 'value'),
+         State('selected-language', 'data')],
         prevent_initial_call=True
     )
-    def add_device(n_clicks, rows, bus_rows):
+    def edit_devices(n_clicks, remove_clicks, values, bus_names, lang):
         if not auth.is_logged_in():
             return no_update
-        rows = rows or []
-        bus_name = (bus_rows or [{}])[0].get('name', '')
-        used = {r.get('slave_id') for r in rows if r.get('bus') == bus_name}
-        slave_id = next(i for i in range(1, 248) if i not in used)
-        return rows + [{'id': None, 'name': f'Sensor {len(rows) + 1}', 'bus': bus_name, 'slave_id': slave_id,
-                        'function_code': 4, 'register_temp': 1, 'register_humidity': 2, 'scale_temp': 0.1,
-                        'scale_humidity': 0.1, 'offset_temp': 0, 'offset_humidity': 0, 'enabled': 'true'}]
+        return edit_rows('devices', _t(lang), bus_names=[n for n in bus_names if n])
 
     @app.callback(
-        Output('device-table', 'dropdown'),
-        Input('bus-table', 'data'),
-        State('device-table', 'dropdown'),
+        Output('rules-form', 'children'),
+        [Input('add-rule', 'n_clicks'),
+         Input({'type': 'cfg-remove', 'table': 'rules', 'row': ALL}, 'n_clicks')],
+        [State(_fields('rules'), 'value'),
+         State('selected-language', 'data')],
         prevent_initial_call=True
     )
-    def update_bus_choices(bus_rows, dropdown):
-        """Bus keuze in de device tabel volgt de (nog niet opgeslagen) bustabel."""
+    def edit_rules(n_clicks, remove_clicks, values, lang):
         if not auth.is_logged_in():
             return no_update
-        names = [r['name'] for r in bus_rows or [] if r.get('name')]
-        return {**dropdown, 'bus': {'options': [{'label': n, 'value': n} for n in names], 'clearable': False}}
+        return edit_rows('rules', _t(lang), bus_names=[])
+
+    @app.callback(
+        Output({'type': 'cfg', 'table': 'devices', 'row': ALL, 'field': 'bus'}, 'options'),
+        Input({'type': 'cfg', 'table': 'buses', 'row': ALL, 'field': 'name'}, 'value'),
+        prevent_initial_call=True
+    )
+    def update_bus_choices(names):
+        """Buskeuze bij de sensoren volgt de (nog niet opgeslagen) bussen."""
+        if not auth.is_logged_in():
+            return no_update
+        options = [{'label': n, 'value': n} for n in names if n]
+        return [options] * len(callback_context.outputs_list)
 
     @app.callback(
         Output('device-status', 'children'),
@@ -452,18 +515,6 @@ def register_settings_callbacks(app):
         if tab != 'settings' or n % 3 or not auth.is_logged_in():
             return no_update
         return device_status_list(_t(lang))
-
-    @app.callback(
-        Output('alert-rule-table', 'data'),
-        Input('add-rule', 'n_clicks'),
-        State('alert-rule-table', 'data'),
-        prevent_initial_call=True
-    )
-    def add_rule(n_clicks, rows):
-        if not auth.is_logged_in():
-            return no_update
-        return (rows or []) + [{'scope': 0, 'metric': 'temperature', 'level': 'alarm', 'min_value': None,
-                                'max_value': None, 'enabled': 'true'}]
 
     @app.callback(
         Output('test-status', 'children'),

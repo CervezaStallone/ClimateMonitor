@@ -14,7 +14,7 @@ HTML_TEMPLATE = '''
         {%favicon%}
         {%css%}
         <style>
-            .theme-dark, body:has(.theme-dark), .theme-dark .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner table {
+            .theme-dark, body:has(.theme-dark) {
                 --bg: #1b1f23; --panel: #24292e; --panel-2: #1f2428; --line: #343a41; --line-strong: #4a525a;
                 --text: #e6e8e3; --muted: #a2a9a2; --cell: #141a17; --digit: #d4ecc9;
                 --accent: #6aa8e8; --accent-ink: #0f1a26; --hover: #2c3238;
@@ -22,7 +22,7 @@ HTML_TEMPLATE = '''
                 --alarm-cell: #3a1d1b; --warn-cell: #33291a;
                 color-scheme: dark;
             }
-            .theme-light, body:has(.theme-light), .theme-light .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner table {
+            .theme-light, body:has(.theme-light) {
                 --bg: #e8e9e4; --panel: #f7f7f3; --panel-2: #fbfbf8; --line: #cdd0c9; --line-strong: #a9ada5;
                 --text: #1b1f23; --muted: #555c55; --cell: #dde5d6; --digit: #1e2a1b;
                 --accent: #1f5fa8; --accent-ink: #ffffff; --hover: #eceee8;
@@ -30,9 +30,8 @@ HTML_TEMPLATE = '''
                 --alarm-cell: #f6dcd9; --warn-cell: #f6ead0;
                 color-scheme: light;
             }
-            /* De DataTable zet eigen --accent/--hover/--muted op zijn tabel (roze focus, witte opties): thema-tokens
-               hierboven daarom ook op die tabel. Ook op body: keuzelijsten en datumkiezers van Dash renderen hun
-               uitklapmenu direct onder body, buiten #app-root. */
+            /* Thema-tokens ook op body: keuzelijsten en datumkiezers van Dash renderen hun uitklapmenu direct
+               onder body, buiten #app-root. */
             body {
                 --Dash-Stroke-Strong: var(--line-strong); --Dash-Stroke-Weak: var(--line);
                 --Dash-Fill-Interactive-Strong: var(--accent); --Dash-Fill-Interactive-Weak: var(--hover);
@@ -203,14 +202,26 @@ HTML_TEMPLATE = '''
             .msg-err { color: var(--alarm); font-weight: 600; margin-top: 10px; }
             .locked { text-align: center; padding: 40px 20px; }
             .settings-head { display: flex; justify-content: space-between; align-items: center; }
-            .settings-actions { position: sticky; bottom: 0; background: var(--panel); border-top: 1px solid var(--line);
+            .settings-actions { position: sticky; bottom: 0; z-index: 20; background: var(--panel); border-top: 1px solid var(--line);
                                 padding: 12px 0; margin-top: 24px; display: flex; align-items: center; gap: 16px; }
             .status-list { margin: 0; padding-left: 18px; font-size: 13px; }
             .status-list li { margin: 3px 0; }
             .table-actions { margin: 8px 0 4px; }
-            .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner input { color: var(--text) !important; background: var(--panel-2) !important; }
-            .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner td.focused { background: var(--hover) !important; }
-            .dash-table-container .dash-delete-cell, .dash-table-container .dash-select-cell { background: var(--panel) !important; color: var(--muted) !important; }
+
+            /* Bussen, sensoren en grenswaarden: één regel velden per item, lijnen ertussen */
+            .cfg-list { border-top: 1px solid var(--line); margin: 6px 0 12px; }
+            .cfg-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(116px, 1fr)); gap: 10px 14px;
+                       align-items: end; padding: 12px 0 14px; border-bottom: 1px solid var(--line); }
+            .cfg-cell { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+            .cfg-cell.wide { grid-column: span 2; }
+            .cfg-label { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+            .cfg-cell .input { width: 100%; min-width: 0; font-variant-numeric: tabular-nums; }
+            .cfg-switch { padding: 7px 0; white-space: nowrap; }
+            .cfg-cell.is-invalid .cfg-label { color: var(--alarm); font-weight: 600; }
+            .cfg-cell.is-invalid .input, .cfg-cell.is-invalid .dash-dropdown { outline: 2px solid var(--alarm); outline-offset: -1px; }
+            .cfg-remove { justify-self: start; padding: 8px 0; }
+            .cfg-remove:hover { color: var(--alarm); }
+            .cfg-empty { padding: 14px 0; color: var(--muted); font-size: 13px; border-bottom: 1px solid var(--line); }
 
             .site-footer { text-align: center; padding: 8px 16px 28px; font-size: 12px; color: var(--muted); }
             .site-footer a { color: var(--muted); text-underline-offset: 3px; }
@@ -229,9 +240,7 @@ HTML_TEMPLATE = '''
                 .board .col-status { display: none; } .st.st-inline { display: inline-flex; }
                 .tabs label { padding: 10px 9px 8px; }
                 .settings { padding: 14px; }
-                .settings .dash-spreadsheet-container { overflow-x: auto; }
-                /* Scrollende tabel knipt een open keuzelijst af: zolang die open is ruimte eronder maken */
-                .settings .dash-spreadsheet-container:has(.Select.is-open) { padding-bottom: 210px; }
+                .cfg-row { grid-template-columns: 1fr 1fr; }
             }
         </style>
     </head>

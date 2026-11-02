@@ -3,6 +3,7 @@
 Een bus = één seriële interface (bijv. USB RS-485 dongle) met één of meer slaves.
 Bij de eerste start wordt de oude .env configuratie (MODBUS_*) bus 1 met device 1.
 """
+import glob
 import os
 import sqlite3
 import threading
@@ -311,6 +312,9 @@ def available_ports():
     """Seriële poorten op dit apparaat, als suggestie in de Settings tab."""
     try:
         from serial.tools import list_ports
-        return sorted(p.device for p in list_ports.comports())
+        # hwid 'n/a' = lege seriële poort zonder hardware (/dev/ttyS0-31 op een pc): geen suggestie waard
+        ports = sorted(p.device for p in list_ports.comports() if p.hwid != 'n/a')
     except Exception:
-        return []
+        ports = []
+    # Linux: vaste namen per adapter (serienummer) eerst; ttyUSB0/1 kunnen na een herstart wisselen
+    return sorted(glob.glob('/dev/serial/by-id/*')) + ports
