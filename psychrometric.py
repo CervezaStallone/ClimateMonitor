@@ -335,3 +335,15 @@ def add_zones(fig, zone_list):
     if zone_list:   # zones onder de sensorpunten en lijnen leggen
         fig.data = fig.data[-len(zone_list):] + fig.data[:-len(zone_list)]
     return fig
+
+
+def path_to_points(path):
+    """Plotly tekenpad ('M20,7.3L30,13.3Z', x = °C, y = g/kg) naar zonepunten [[°C, RV %], ...]."""
+    import re
+    points = []
+    for temp, ratio in re.findall(r'(-?[\d.]+),(-?[\d.]+)', path or ''):
+        temp, w = float(temp), max(float(ratio), 0) / 1000
+        pw = w * 101325 / (0.622 + w)
+        pws = 611.2 * np.exp(17.62 * temp / (243.12 + temp))
+        points.append([round(temp, 2), round(float(min(max(pw / pws * 100, 0), 100)), 1)])
+    return points

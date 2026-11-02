@@ -144,6 +144,9 @@ HTML_TEMPLATE = '''
             /* Mollier + historie */
             .history-bar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 0 16px 14px; }
             .hint { color: var(--muted); font-size: 13px; }
+            .draw-bar { display: grid; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--panel-2); }
+            .draw-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+            .draw-actions .input { width: 220px; max-width: 100%; }
             .slider-box { padding: 4px 16px 18px; }
             .slider-time { font-family: var(--mono); font-size: 15px; margin-bottom: 8px; }
 
@@ -358,6 +361,20 @@ def create_layout():
             html.Section(id='mollier-panel', className='panel', style=mollier_style(), children=[
                 html.Div(className='panel-head', children=[
                     html.Span(id='label-psychrometric-chart', className='panel-title', children=t['psychrometric_chart']),
+                    html.Button(t['btn_draw_zone'], id='draw-zone-btn', n_clicks=0, className='btn btn-small'),
+                ]),
+                # Zone tekenen: zolang dit open is pauzeert de live-verversing (die zou de tekening wissen)
+                dcc.Store(id='zone-drawing', data=False),
+                dcc.Store(id='zone-draw-path'),
+                html.Div(id='draw-bar', className='draw-bar', style={'display': 'none'}, children=[
+                    html.Div(t['hint_draw_zone'], id='draw-zone-hint', className='hint'),
+                    html.Div(className='draw-actions', children=[
+                        dcc.Input(id='draw-zone-name', type='text', placeholder=t['lbl_zone_name'], className='input',
+                                  maxLength=50),
+                        html.Button(t['btn_save_zone'], id='save-zone-btn', n_clicks=0, className='btn btn-primary btn-small'),
+                        html.Button(t['btn_cancel'], id='cancel-zone-btn', n_clicks=0, className='btn btn-small'),
+                        html.Span(id='draw-zone-msg', className='hint'),
+                    ]),
                 ]),
                 html.Div(className='panel-body', children=dcc.Graph(
                     id='psychrometric-chart', config={'displaylogo': False, 'displayModeBar': False})),

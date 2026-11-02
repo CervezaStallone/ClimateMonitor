@@ -1,20 +1,23 @@
+import json
 import sqlite3
 import math
 import pandas as pd
 from datetime import datetime, timedelta
-from dash import callback_context, html, no_update, Input, Output, State
+from dash import Patch, callback_context, html, no_update, Input, Output, State
 import plotly.graph_objects as go
 
 import alerts
+import auth
 import devices
 import layout
 import settings
+import settings_ui
 import wood
 import zones
 from translations import TRANSLATIONS
 from database import get_all_measurement_tables, build_union_query, DB_FILE
 from modbus_reader import derived_values
-from psychrometric import add_device_points, add_zones, create_psychrometric_chart, create_psychrometric_chart_historical
+from psychrometric import add_device_points, add_zones, path_to_points, create_psychrometric_chart, create_psychrometric_chart_historical
 
 # Categorisch palet per sensor (vaste volgorde, gevalideerd op kleurenblindheid en contrast).
 # Sensor 9 en verder krijgen een neutrale kleur; status-kleuren worden nooit voor sensoren gebruikt.
@@ -313,16 +316,77 @@ def register_callbacks(app):
         fig = metric_figure(df, names, device_colors(mode), metric, t, mode)
         return fig, count_text, stored_relayout
 
+    @app.callback(
+        [Output('draw-zone-msg', 'children'),
+         Output('zone-drawing', 'data', allow_duplicate=True),
+         Output('draw-bar', 'style', allow_duplicate=True)],
+        Input('save-zone-btn', 'n_clicks'),
+        [State('zone-draw-path', 'data'),
+         State('draw-zone-name', 'value'),
+         State('device-selector', 'value'),
+         State('selected-language', 'data')],
+        prevent_initial_call=True
+    )
+    def save_drawn_zone(n_clicks, path, name, device_sel, lang):
+        """Getekende vorm opslaan als zone (alleen ingelogd: het dashboard kan publiek zijn)."""
+        t = TRANSLATIONS.get(lang) or TRANSLATIONS['en']
+        if not auth.is_logged_in():
+            return t['draw_login'], no_update, no_update
+        points = path_to_points(path)
+        if len(points) < 3:
+            return t['draw_empty'], no_update, no_update
+        rows = settings_ui.table_rows('zones') + [{
+            'scope': device_sel or 0, 'name': (name or '').strip() or f"{t['zone']} {len(zones.load()) + 1}",
+            'color': 'blue', 'mode': 'none', 'level': 'warning', 'shape': 'polygon', 'points': json.dumps(points),
+            'enabled': 'true'}]
+        errors = zones.save(rows)
+        if errors:
+            return t['msg_save_failed'], no_update, no_update
+        return t['draw_saved'], False, {'display': 'none'}
+
+    @app.callback(
+        [Output('zone-drawing', 'data'),
+         Output('draw-bar', 'style'),
+         Output('psychrometric-chart', 'figure', allow_duplicate=True)],
+        [Input('draw-zone-btn', 'n_clicks'),
+         Input('cancel-zone-btn', 'n_clicks')],
+        prevent_initial_call=True
+    )
+    def toggle_zone_drawing(draw_clicks, cancel_clicks):
+        """Tekenmodus: Plotly tekent een gesloten pad; annuleren wist de tekening."""
+        drawing = callback_context.triggered_id == 'draw-zone-btn'
+        figure = Patch()
+        figure['layout']['dragmode'] = 'drawclosedpath' if drawing else 'zoom'
+        figure['layout']['newshape'] = {'line': {'color': zones.COLORS['blue'], 'width': 2},
+                                        'fillcolor': zones.fill_color('blue', 0.2)}
+        if not drawing:
+            figure['layout']['shapes'] = []
+        return drawing, {} if drawing else {'display': 'none'}, figure
+
+    @app.callback(
+        Output('zone-draw-path', 'data'),
+        Input('psychrometric-chart', 'relayoutData'),
+        State('zone-drawing', 'data'),
+        prevent_initial_call=True
+    )
+    def keep_drawn_path(relayout, drawing):
+        """Laatst getekende vorm onthouden (Plotly geeft alle vormen in 'shapes')."""
+        shapes = (relayout or {}).get('shapes')
+        if not drawing or not shapes:
+            return no_update
+        return shapes[-1].get('path')
+
     # Callback voor psychrometric chart
     @app.callback(
         Output('psychrometric-chart', 'figure'),
         [Input('graph-update', 'n_intervals'),
          Input('selected-language', 'data'),
-         Input('device-selector', 'value')]
+         Input('device-selector', 'value')],
+        State('zone-drawing', 'data')
     )
-    def update_psychrometric_chart(n, lang, device_sel):
+    def update_psychrometric_chart(n, lang, device_sel, drawing):
         """Update psychrometrisch diagram met actuele meetwaarden (alle devices of één device)"""
-        if not settings.get('show_mollier'):
+        if not settings.get('show_mollier') or drawing:   # tijdens tekenen niet verversen: wist de tekening
             return no_update
         if lang is None:
             lang = 'nl'
@@ -818,7 +882,12 @@ def register_callbacks(app):
          Output('custom-start-date', 'placeholder'),
          Output('custom-end-date', 'placeholder'),
          Output('custom-start-hour', 'placeholder'),
-         Output('custom-end-hour', 'placeholder')] +
+         Output('custom-end-hour', 'placeholder'),
+         Output('draw-zone-btn', 'children'),
+         Output('draw-zone-hint', 'children'),
+         Output('draw-zone-name', 'placeholder'),
+         Output('save-zone-btn', 'children'),
+         Output('cancel-zone-btn', 'children')] +
         [Output(f'preset-{key}', 'children') for key in PRESET_BUTTONS],
         Input('selected-language', 'data')
     )
@@ -827,4 +896,5 @@ def register_callbacks(app):
         t = TRANSLATIONS.get(lang) or TRANSLATIONS['en']
         return [t['btn_select_range'], t['modal_title'], t['quick_select'], t['specific_period'], t['start_datetime'],
                 t['end_datetime'], t['btn_apply'], t['select_date'], t['select_date'], t['hour_placeholder'],
-                t['hour_placeholder']] + [t[f'btn_{key}'] for key in PRESET_BUTTONS]
+                t['hour_placeholder'], t['btn_draw_zone'], t['hint_draw_zone'], t['lbl_zone_name'], t['btn_save_zone'],
+                t['btn_cancel']] + [t[f'btn_{key}'] for key in PRESET_BUTTONS]
