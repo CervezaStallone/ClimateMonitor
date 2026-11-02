@@ -3,6 +3,7 @@ from flask import has_request_context, request
 
 import devices
 import settings
+import zones
 from translations import LANGUAGE_NAMES, TRANSLATIONS
 
 # Design tokens per thema (CSS variabelen) en componentstijlen. Alles lokaal: geen externe fonts of CDN's.
@@ -150,6 +151,7 @@ HTML_TEMPLATE = '''
             .draw-bar { display: grid; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--panel-2); }
             .draw-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
             .draw-actions .input { width: 220px; max-width: 100%; }
+            .draw-select { width: 230px; max-width: 100%; }
             .slider-box { padding: 4px 16px 18px; }
             .slider-time { font-family: var(--mono); font-size: 15px; margin-bottom: 8px; }
 
@@ -339,6 +341,15 @@ def current_theme():
     return mode if mode in THEMES else 'dark'
 
 
+def zone_mode_options(t):
+    return [{'label': t[f'opt_mode_{mode}'], 'value': mode} for mode in zones.MODES]
+
+
+def zone_color_options(t):
+    return [{'label': html.Span([html.Span(className='swatch', style={'--series': hex_color}), t[f'opt_color_{name}']],
+                                className='color-option'), 'value': name} for name, hex_color in zones.COLORS.items()]
+
+
 def theme_options(t):
     return [{'label': t[f'opt_dashboard_theme_{mode}'], 'value': mode} for mode in THEMES]
 
@@ -408,6 +419,10 @@ def create_layout():
                     html.Div(className='draw-actions', children=[
                         dcc.Input(id='draw-zone-name', type='text', placeholder=t['lbl_zone_name'], className='input',
                                   maxLength=50),
+                        dcc.Dropdown(id='draw-zone-mode', options=zone_mode_options(t), value='keep_outside',
+                                     clearable=False, searchable=False, className='draw-select'),
+                        dcc.Dropdown(id='draw-zone-color', options=zone_color_options(t), value='red',
+                                     clearable=False, searchable=False, className='draw-select'),
                         html.Button(t['btn_save_zone'], id='save-zone-btn', n_clicks=0, className='btn btn-primary btn-small'),
                         html.Button(t['btn_cancel'], id='cancel-zone-btn', n_clicks=0, className='btn btn-small'),
                         html.Span(id='draw-zone-msg', className='hint'),

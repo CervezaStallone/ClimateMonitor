@@ -742,20 +742,20 @@ def test_save_drawn_zone_only_when_logged_in():
     callbacks.register_callbacks(app)
     path = 'M20,7.29L30,13.31L25,4Z'
     with app.server.test_request_context():
-        msg, drawing, _ = run_callback(app, 'draw-zone-msg.children', 1, path, 'Droog', 0, 'nl',
+        msg, drawing, _ = run_callback(app, 'draw-zone-msg.children', 1, path, 'Droog', 'keep_outside', 'red', 0, 'nl',
                                        trigger='save-zone-btn.n_clicks')
         assert msg == TRANSLATIONS_NL['draw_login'] and zones.load() == []   # dashboard kan publiek zijn
         original, auth.is_logged_in = auth.is_logged_in, lambda: True
         try:
-            assert run_callback(app, 'draw-zone-msg.children', 1, None, 'Droog', 0, 'nl',
+            assert run_callback(app, 'draw-zone-msg.children', 1, None, 'Droog', 'keep_outside', 'red', 0, 'nl',
                                 trigger='save-zone-btn.n_clicks')[0] == TRANSLATIONS_NL['draw_empty']
-            msg, drawing, _ = run_callback(app, 'draw-zone-msg.children', 1, path, 'Droog', 0, 'nl',
+            msg, drawing, _ = run_callback(app, 'draw-zone-msg.children', 1, path, 'Droog', 'keep_outside', 'red', 0, 'nl',
                                            trigger='save-zone-btn.n_clicks')
         finally:
             auth.is_logged_in = original
     assert msg == TRANSLATIONS_NL['draw_saved'] and drawing is False
     zone = zones.load()[0]
-    assert zone['name'] == 'Droog' and zone['shape'] == 'polygon' and len(zone['points']) == 3 and zone['mode'] == 'none'
+    assert zone['name'] == 'Droog' and zone['shape'] == 'polygon' and len(zone['points']) == 3 and zone['mode'] == 'keep_outside' and zone['color'] == 'red'
 
 
 def test_draw_mode_pauses_live_mollier_and_keeps_path():
@@ -765,6 +765,7 @@ def test_draw_mode_pauses_live_mollier_and_keeps_path():
     setup_alerts([])
     rendered = str(layout.create_layout())
     assert 'draw-zone-btn' in rendered and 'draw-bar' in rendered
+    assert 'draw-zone-mode' in rendered and 'draw-zone-color' in rendered
     app = Dash(__name__)
     callbacks.register_callbacks(app)
     drawing, bar, _ = run_callback(app, '..zone-drawing.data...draw-bar.style', 1, 0, trigger='draw-zone-btn.n_clicks')

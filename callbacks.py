@@ -342,11 +342,13 @@ def register_callbacks(app):
         Input('save-zone-btn', 'n_clicks'),
         [State('zone-draw-path', 'data'),
          State('draw-zone-name', 'value'),
+         State('draw-zone-mode', 'value'),
+         State('draw-zone-color', 'value'),
          State('device-selector', 'value'),
          State('selected-language', 'data')],
         prevent_initial_call=True
     )
-    def save_drawn_zone(n_clicks, path, name, device_sel, lang):
+    def save_drawn_zone(n_clicks, path, name, mode, color, device_sel, lang):
         """Getekende vorm opslaan als zone (alleen ingelogd: het dashboard kan publiek zijn)."""
         t = TRANSLATIONS.get(lang) or TRANSLATIONS['en']
         if not auth.is_logged_in():
@@ -356,7 +358,8 @@ def register_callbacks(app):
             return t['draw_empty'], no_update, no_update
         rows = settings_ui.table_rows('zones') + [{
             'scope': device_sel or 0, 'name': (name or '').strip() or f"{t['zone']} {len(zones.load()) + 1}",
-            'color': 'blue', 'mode': 'none', 'level': 'warning', 'shape': 'polygon', 'points': json.dumps(points),
+            'color': color or 'blue', 'mode': mode or 'none', 'level': 'warning', 'shape': 'polygon',
+            'points': json.dumps(points),
             'enabled': 'true'}]
         errors = zones.save(rows)
         if errors:
