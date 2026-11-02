@@ -12,7 +12,7 @@ HTML_TEMPLATE = '''
     <head>
         {%metas%}
         <title>{%title%}</title>
-        {%favicon%}
+        <link rel="icon" type="image/svg+xml" href="/assets/logo.svg">
         {%css%}
         <style>
             .theme-dark, body:has(.theme-dark) {
@@ -57,6 +57,8 @@ HTML_TEMPLATE = '''
             .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
                       padding: 10px 24px; background: var(--panel); border-bottom: 1px solid var(--line); }
             .topbar-left, .topbar-right { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; }
+            .brand-wrap { display: flex; align-items: center; gap: 10px; }
+            .brand-logo { width: 26px; height: 26px; display: block; }
             .brand { font-weight: 700; letter-spacing: .08em; text-transform: uppercase; font-size: 13px; }
             .summary { font-family: var(--mono); font-size: 12px; color: var(--muted); letter-spacing: .04em; }
             .summary .n-alarm { color: var(--alarm); } .summary .n-warn { color: var(--warn); }
@@ -358,7 +360,10 @@ def create_layout():
 
         html.Header(className='topbar', children=[
             html.Div(className='topbar-left', children=[
-                html.Span(id='brand', className='brand', children=t['app_name']),
+                html.Div(className='brand-wrap', children=[
+                    html.Img(src='/assets/logo.svg', className='brand-logo', alt=''),
+                    html.Span(id='brand', className='brand', children=t['app_name']),
+                ]),
                 dcc.RadioItems(id='main-tabs', className='nav', options=nav_options(t), value='dashboard'),
             ]),
             html.Div(className='topbar-right', children=[

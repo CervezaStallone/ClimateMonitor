@@ -812,6 +812,15 @@ def test_theme_toggle_in_header_remembers_choice():
     assert 'theme=dark' in context_value.get().dash_response.headers.get('Set-Cookie')
 
 
+def test_logo_in_header_and_as_favicon():
+    import layout
+    fresh_settings()
+    assert os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets', 'logo.svg'))
+    root = layout.create_layout()
+    assert any(getattr(c, 'src', None) == '/assets/logo.svg' for c in components(root))
+    assert 'rel="icon"' in layout.HTML_TEMPLATE and '/assets/logo.svg' in layout.HTML_TEMPLATE
+
+
 def test_board_shows_zone_alarm():
     import json
     import callbacks
