@@ -42,6 +42,7 @@ A real-time climate monitoring dashboard for Modbus RTU temperature and humidity
 - [Adding a New Language](#adding-a-new-language)
 - [Comfort Score & Humidex](#comfort-score--humidex)
 - [Mollier Diagram (Psychrometric Chart)](#mollier-diagram-psychrometric-chart)
+- [Wood Moisture (Equilibrium Moisture Content)](#wood-moisture-equilibrium-moisture-content)
 - [Historical Data Replay](#historical-data-replay)
 - [Database Architecture](#database-architecture)
 - [Testing](#testing)
@@ -59,23 +60,27 @@ A real-time climate monitoring dashboard for Modbus RTU temperature and humidity
 - **Multiple measurements**:
   - Temperature (°C)
   - Humidity (%)
-  - Dew Point (calculated)
+  - Dew Point (Magnus formula)
   - Absolute Humidity (g/m³)
   - Humidex (scientific comfort index)
   - Comfort Score (0-6, based on Humidex)
 - **Psychrometric chart**: Mollier diagram with live indicator and comfort zone visualization
+- **Wood moisture** (optional): equilibrium moisture content per sensor, a diagram with zones from your limits, warning and alarm levels
+- **Zones**: your own coloured areas of temperature × humidity in the Mollier and wood diagram (from min/max or drawn freely), with a notification when a sensor leaves a desired zone or enters a danger zone
 - **Historical data replay**: Time-travel through data with preset buttons or custom date/time selection
 - **Interactive slider**: Live updates while dragging for smooth historical navigation
 - **Scientific analysis**: Humidex formula according to Environment Canada standard
 - **Multilingual**: 5 languages fully supported (Dutch, English, German, French, Spanish)
 - **Two dashboard views**: *Board* (every sensor as one row, all sensors at a glance) or *Meters* (one panel per sensor)
-- **Dark and light theme**: chosen in Settings; layout adapts to phones and tablets
+- **Dark and light theme**: toggle in the top bar, remembered per browser (default in Settings); layout adapts to phones and tablets
+- **Alarm window**: click the sensor summary in the top bar to see all active alarms and warnings and mute them for 15 minutes to 24 hours
 - **Clear status per sensor**: OK, warning, alarm or offline, with the value that is out of limits highlighted
 - **Zoom persistence**: Graph zoom stays preserved during live updates
 - **Robust**: Extensive input validation and error handling
 - **Multiple sensors and RS-485 buses**: several USB/RS-485 interfaces, each with several Modbus slaves; combined and per-sensor graphs
+- **Flexible sensors**: register data type (int16, uint16, int32, uint32, float32), byte order (ABCD, DCBA, BADC, CDAB) and a calibration correction per sensor; *Scan* finds which slave addresses answer on a bus
 - **Configurable in the browser**: Settings tab for buses, sensors, timezone, language, data retention, server and security
-- **Notifications**: Telegram and/or e-mail when limits are exceeded (global or per sensor), when values are back to normal and when a sensor goes offline
+- **Notifications**: Telegram and/or e-mail when limits are exceeded (global or per sensor, at warning or alarm level) or a zone is left or entered, when values are back to normal and when a sensor goes offline
 - **MQTT**: publish the values of every sensor to an MQTT broker (Home Assistant, Node-RED, SCADA)
 - **Login protection**: Admin password for the Settings tab, optionally for the whole app
 
@@ -97,7 +102,11 @@ A real-time climate monitoring dashboard for Modbus RTU temperature and humidity
 
 #### Mollier diagram
 ![Mollier diagram](img/mollier.png)
-*Current state of every sensor in its own colour, with saturation line, RH curves and comfort zone.*
+*Current state of every sensor in its own colour, with saturation line, RH curves, comfort zone and your own zones (here a desired comfort zone and a mould-risk danger zone).*
+
+#### Wood moisture
+![Wood moisture diagram](img/wood-diagram.png)
+*Equilibrium wood moisture: lines of equal wood moisture, the 18 % warning and 20 % alarm limits and the zones.*
 
 #### Historical replay
 ![Historical range](img/history-range.png)
@@ -272,6 +281,8 @@ ClimateMonitor/
 ├── alerts.py                   # Limits, alarm state, Telegram/e-mail notifications
 ├── mqtt_publisher.py           # MQTT publishing per sensor
 ├── psychrometric.py            # Mollier diagram generation
+├── wood.py                     # Wood equilibrium moisture: formula, response time, diagram
+├── zones.py                    # Zones (areas of temperature × humidity) with colour and alarm
 ├── callbacks.py                # Dashboard callbacks (board/meters, chart, Mollier, replay)
 ├── settings.py                 # Settings stored in the database, validation, password reset
 ├── settings_ui.py              # Settings tab
@@ -280,6 +291,7 @@ ClimateMonitor/
 ├── translations.py             # Texts in NL, EN, DE, FR, ES
 ├── test_app.py                 # Automated tests
 ├── deploy/                     # Service install scripts (Linux, Windows)
+├── assets/                     # Logo (header and favicon), served by Dash
 ├── img/                        # README screenshots
 ├── .env                        # Configuration (not in git)
 ├── .env.example                # Example configuration
@@ -297,16 +309,21 @@ ClimateMonitor/
 | Status | Meaning |
 |--------|---------|
 | OK | Value received recently and all limits are met |
-| Warning | A limit is exceeded, but the alarm delay is still running (no notification sent yet) |
-| Alarm | A limit has been exceeded for longer than the alarm delay; notifications are sent |
+| Warning | A warning-level limit or zone is exceeded, or an alarm limit is exceeded while the alarm delay is still running |
+| Alarm | An alarm limit or zone has been exceeded for longer than the alarm delay; notifications are sent |
 | Offline | No valid reading for 3 poll intervals (at least 30 seconds); the last reading time is shown |
 
 The value that is out of limits is highlighted in its cell. The top bar shows how many sensors are
-in alarm, warning or offline.
+in alarm, warning or offline; click it to open the **alarm window**. There you see every active alarm
+and warning with the time it started, and (when logged in) mute it for 15 minutes, 1, 8 or 24 hours.
+A muted alarm stays visible but sends no notifications; mutes end when the app restarts.
+
+**Theme**: *Dark* / *Light* in the top bar switches instantly and is remembered in this browser.
 
 **Views**
 - *Board*: one row per sensor with temperature, humidity, dew point, absolute humidity, comfort,
-  a 24-hour temperature trend and the status. On a phone the less important columns are hidden.
+  wood moisture (when enabled), a 24-hour temperature trend and the status. On a phone the less
+  important columns are hidden and the headers are shortened.
 - *Meters*: one panel per sensor with large values.
 
 Every sensor keeps the same colour everywhere (its marker, trend line, chart line and Mollier point).
@@ -314,8 +331,13 @@ Every sensor keeps the same colour everywhere (its marker, trend line, chart lin
 **Chart**: choose the quantity with the tabs (temperature, humidity, dew point, absolute humidity,
 comfort), and choose *All sensors (combined)* or a single sensor and the time range on the right.
 
-**Mollier diagram and replay**: shows the current state of all sensors. Select one sensor in the
-chart to enable *Choose range for historical analysis*.
+**Mollier diagram and replay**: shows the current state of all sensors and your zones. Select one
+sensor in the chart to enable *Choose range for historical analysis*.
+
+**Drawing a zone**: click *Draw zone* above the Mollier diagram, draw a closed shape with the mouse
+or a finger, give it a name, choose desired zone / danger zone / display only and a colour, and save
+(requires being logged in). The zone applies to the sensor selected above the chart, or to all
+sensors. Change it later in Settings → Notifications: limits → Zones.
 
 ### Configuration
 
@@ -326,11 +348,12 @@ Open the **Settings** tab in the web app. The first visit asks you to create an 
 
 | Section | Settings |
 |---------|----------|
-| Display | Dashboard view (Board / Meters), theme (Dark / Light), show or hide comfort and the Mollier diagram |
-| Modbus buses and sensors | Poll interval, buses (RS-485 interfaces), sensors (Modbus slaves) |
+| Display | Dashboard view (Board / Meters), theme (Dark / Light), show or hide comfort, the Mollier diagram and wood moisture |
+| Modbus buses and sensors | Poll interval, buses (RS-485 interfaces), sensors (Modbus slaves) with data type (int16, uint16, int32, uint32, float32), byte order (ABCD, DCBA, BADC, CDAB) and a temperature and humidity correction for calibration |
 | Notifications: channels | Telegram bot token and chat ID, SMTP server, sender and recipients, test buttons |
 | MQTT | Broker, port, TLS, login, client ID, topic prefix, publish interval, QoS, retain, test button |
-| Notifications: limits | Limits per quantity (all sensors or one sensor), alarm delay, hysteresis, recovery and offline alerts |
+| Notifications: limits | Limits per quantity (all sensors or one sensor) at warning or alarm level, zones (desired or danger zone, colour, per sensor), alarm delay, hysteresis, recovery and offline alerts |
+| Wood moisture | Correction for the wood species (% points), response time of the wood (hours), hysteresis |
 | Region and language | Timezone, default language |
 | Data | Data retention (days, 0 = forever), debug logging |
 | Server | Listen address and port (*restart required*) |
@@ -384,12 +407,16 @@ its detailed view and historical replay.
    - Use **Test Telegram** / **Test e-mail** to check the settings before saving.
    - Token and password are never shown again; leave the field empty to keep the stored value.
 2. **Limits** (Settings → Notifications: limits)
-   - Add a limit per quantity (temperature, humidity, dew point, absolute humidity) with a
-     minimum and/or maximum, for *All sensors* or for one sensor. A rule for one sensor replaces
-     the rule for all sensors for that quantity.
+   - Add a limit per quantity (temperature, humidity, dew point, absolute humidity, wood moisture)
+     with a minimum and/or maximum and a level (*Warning* or *Alarm*), for *All sensors* or for one
+     sensor. A rule for one sensor replaces the rule for all sensors for that quantity and level.
+   - *Zones*: an area of temperature × humidity (min/max, or drawn in the Mollier diagram) with a
+     colour. *Desired zone* notifies when a sensor leaves it, *danger zone* when a sensor enters it,
+     *display only* just draws it.
    - *Alarm delay*: how long a limit must be exceeded before an alert is sent (no alerts for spikes).
-   - *Hysteresis*: how far back inside the limit a value must be before it counts as normal again,
-     so a value hovering around the limit does not cause a stream of messages.
+   - *Hysteresis*: how far back inside the limit (or away from a zone edge) a value must be before it
+     counts as normal again, so a value hovering around the limit does not cause a stream of messages.
+   - Saving the settings keeps alarms that are already active, as long as their limit did not change.
    - *Notify when back to normal* and *Offline alert after N minutes* (0 = off).
    - The last 20 notifications and their delivery status are listed below the limits. Failed
      messages are retried automatically (up to every hour).
@@ -404,7 +431,7 @@ saving. With topic prefix `xy-md02` every sensor publishes, at most once per pub
 |-------|---------|
 | `xy-md02/status` | `online` / `offline` (retained, `offline` via last will) |
 | `xy-md02/<sensor>/state` | `{"device_id": 3, "name": "Kas noord", "temperature": 18.7, "humidity": 62.0, "dewpoint": 11.1, "absolute_humidity": 9.92, "timestamp": "2026-10-14T12:15:43+02:00"}` |
-| `xy-md02/<sensor>/temperature` (and `humidity`, `dewpoint`, `absolute_humidity`) | plain value, e.g. `18.7` |
+| `xy-md02/<sensor>/temperature` (and `humidity`, `dewpoint`, `absolute_humidity`, `wood_emc` when wood moisture is on) | plain value, e.g. `18.7` |
 
 `<sensor>` is the sensor name in lower case with `-` instead of spaces (`Kas noord` → `kas-noord`);
 renaming a sensor changes its topic, `device_id` stays the same. If the broker is unreachable,
@@ -507,6 +534,27 @@ The application displays an interactive **psychrometric chart** with:
 
 This diagram helps to see at a glance whether the climate condition is within the comfort zone and how it relates to saturation limits.
 
+### Wood Moisture (Equilibrium Moisture Content)
+
+Turn on *Show wood moisture* in Settings > Display for storage rooms, workshops or drying rooms with wood.
+The app then calculates the **equilibrium moisture content** (EMC): the moisture content wood moves towards
+at the measured temperature and humidity, with the Hailwood-Horrobin formula from the USDA Wood Handbook
+(20 °C and 65 % RH gives 12 %).
+
+- **Board, meters and chart**: a *Wood moisture* value per sensor
+- **Diagram**: temperature × humidity with lines of equal wood moisture, the sensors as points and the
+  wood moisture limits from your alarm rules as coloured zones (yellow = warning, red = alarm)
+- **Alarms**: add rules for *Wood moisture*, e.g. a warning at a maximum of 18 % and an alarm at 20 %
+- **Response time** (default 24 h): wood follows the air slowly, so the board and the alarms use an average
+  over this time. An open door or a short peak does not trigger an alarm. After a restart the average is
+  taken from the database. Set it to 0 to use the live value.
+- **Correction**: the formula applies to average wood; according to the handbook the difference between
+  species is small. Tropical or thermally modified wood takes up less moisture: enter a negative correction,
+  or calibrate against a wood moisture meter.
+
+18 % wood moisture is about 85 % RH and 20 % about 89 % RH, so a few % RH sensor error matters here.
+Use the humidity correction per sensor (Settings > Modbus) to calibrate the sensors.
+
 ### Historical Data Replay
 
 The application offers advanced historical data analysis with two input methods:
@@ -604,11 +652,13 @@ The application includes an automated test suite:
 python test_app.py
 ```
 
-**Test coverage** (45 tests, also run by the *CI Testing* workflow on every pull request):
+**Test coverage** (84 tests, also run by the *CI Testing* workflow on every pull request):
 - Settings: migration from `.env`, validation, all-or-nothing saving, write-only secrets
 - Login: password rules, sessions, throttling, protection levels, redirects
-- Buses and sensors: validation, upgrade of existing data, signed register values, failure isolation
-- Notifications: limits, alarm delay, hysteresis, recovery and offline alerts, retries
+- Buses and sensors: validation, upgrade of existing data, data types and byte order, calibration, scanning, failure isolation
+- Notifications: limits and levels, zones, alarm delay, hysteresis, recovery, muting, offline alerts, retries
+- Wood moisture: formula against the Wood Handbook, response time, restart after settings change
+- Dashboard: form fields, zones in the diagrams, drawing zones, theme toggle, alarm window, phone layout
 - MQTT: topics, payloads, reconnect behaviour
 - Translations: same placeholders in every language, no untranslated text in the layout
 
@@ -623,7 +673,7 @@ pip freeze > requirements.txt
 
 - **app.py**: entry point, starts the Modbus reader, notifications, MQTT and the web server
 - **layout.py**: page structure, theme tokens (dark/light) and styling
-- **callbacks.py**: dashboard (board/meters, chart, status, Mollier diagram, historical replay)
+- **callbacks.py**: dashboard (board/meters, chart, status, Mollier and wood diagram, drawing zones, alarm window, theme)
 - **settings_ui.py**: Settings tab
 - **settings.py** / **devices.py**: settings, buses and sensors stored in the database
 - **modbus_reader.py**: one thread per RS-485 bus, batched database writes
@@ -632,6 +682,8 @@ pip freeze > requirements.txt
 - **auth.py**: admin password, login sessions, protection
 - **database.py**: table-per-day storage, queries, cleanup
 - **psychrometric.py**: Mollier diagram
+- **wood.py**: wood equilibrium moisture
+- **zones.py**: zones, point-in-zone check
 - **translations.py**: texts in NL, EN, DE, FR, ES
 - **test_app.py**: automated tests
 
@@ -646,6 +698,10 @@ pip freeze > requirements.txt
 #### Database errors
 - Ensure the `src/` folder exists
 - Check write permissions in the project folder
+
+#### `TypeError: ... unexpected keyword argument` after updating
+The code was updated but the Python packages were not. Activate the virtual environment and run
+`pip install -r requirements.txt` (or run the service install script again), then start the app.
 
 #### Port already in use
 - Change the port in the Settings tab (Server section) and restart the app

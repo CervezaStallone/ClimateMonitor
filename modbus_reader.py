@@ -9,6 +9,7 @@
 """
 import math
 import queue
+import struct
 import sqlite3
 import threading
 import time
@@ -21,6 +22,7 @@ import alerts
 import devices
 import mqtt_publisher
 import settings
+import wood
 from database import DB_FILE, cleanup_old_data, ensure_table_exists, get_table_name
 
 PARITY_MAP = {
@@ -42,17 +44,46 @@ SUPERVISOR_INTERVAL = 2  # seconden
 
 def derived_values(temperature, humidity):
     """Bereken dauwpunt (°C) en absolute vochtigheid (g/m³)."""
-    dewpoint = temperature - ((100 - humidity) / 5.0)
+    # Magnus (Sonntag 1990); de oude vuistregel T - (100-RV)/5 week bij lage RV tot enkele graden af
+    gamma = math.log(max(humidity, 0.1) / 100) + 17.62 * temperature / (243.12 + temperature)
+    dewpoint = 243.12 * gamma / (17.62 - gamma)
     # Formule: AH = (6.112 × e^((17.67 × T)/(T+243.5)) × RH × 2.1674) / (273.15+T)
     absolute_humidity = (6.112 * math.exp((17.67 * temperature) / (temperature + 243.5)) * humidity * 2.1674) / (273.15 + temperature)
     return dewpoint, absolute_humidity
 
 
+# Datatype -> (struct formaat, aantal registers). Byte-volgorde: letters = bytes van hoog naar laag zoals
+# ze op de bus staan (ABCD = big endian, DCBA = little endian, BADC = bytes per woord gewisseld, CDAB = woorden gewisseld)
+DATA_TYPES = {'int16': ('h', 1), 'uint16': ('H', 1), 'int32': ('i', 2), 'uint32': ('I', 2), 'float32': ('f', 2)}
+BYTE_ORDERS = {'ABCD': (0, 1, 2, 3), 'DCBA': (3, 2, 1, 0), 'BADC': (1, 0, 3, 2), 'CDAB': (2, 3, 0, 1)}
+
+
+def decode(registers, data_type, byte_order):
+    """Registers (16-bit, zoals ontvangen) naar een getal volgens datatype en byte-volgorde."""
+    raw = b''.join((r & 0xFFFF).to_bytes(2, 'big') for r in registers)
+    order = BYTE_ORDERS[byte_order]
+    if len(raw) == 2:   # één register: alleen de bytevolgorde binnen het woord telt
+        order = (1, 0) if byte_order in ('DCBA', 'BADC') else (0, 1)
+    return struct.unpack('>' + DATA_TYPES[data_type][0], bytes(raw[i] for i in order))[0]
+
+
+def read_value(instrument, device, register):
+    data_type = device.get('data_type', 'int16')
+    registers = instrument.read_registers(register, DATA_TYPES[data_type][1], device['function_code'])
+    return decode(registers, data_type, device.get('byte_order', 'ABCD'))
+
+
 def read_device(instrument, device):
-    """Lees temperatuur en luchtvochtigheid (signed registers × schaal)."""
-    raw_temp = instrument.read_register(device['register_temp'], 0, device['function_code'], signed=True)
-    raw_humidity = instrument.read_register(device['register_humidity'], 0, device['function_code'], signed=True)
-    return round(raw_temp * device['scale_temp'], 3), round(raw_humidity * device['scale_humidity'], 3)
+    """Lees temperatuur en luchtvochtigheid (registers volgens datatype en byte-volgorde × schaal)."""
+    raw_temp = read_value(instrument, device, device['register_temp'])
+    raw_humidity = read_value(instrument, device, device['register_humidity'])
+    # Kalibratie per sensor. Alleen een geldige meting (0-100 %) wordt na de correctie begrensd: een sensor op
+    # 99 % + 3 is geen meetfout, een ruwe -5 % wel (die moet als 'out of range' geweigerd worden, niet 0 % worden)
+    temperature = raw_temp * device['scale_temp'] + device.get('offset_temp', 0)
+    humidity = raw_humidity * device['scale_humidity']
+    if HUMIDITY_RANGE[0] <= humidity <= HUMIDITY_RANGE[1]:
+        humidity = min(max(humidity + device.get('offset_humidity', 0), HUMIDITY_RANGE[0]), HUMIDITY_RANGE[1])
+    return round(temperature, 3), round(humidity, 3)
 
 
 def open_instrument(bus, device):
@@ -66,6 +97,50 @@ def open_instrument(bus, device):
     if not instrument.serial.is_open:
         instrument.serial.open()
     return instrument
+
+
+_port_locks = {}                # poort -> Lock: poller en scan gebruiken dezelfde seriële verbinding om beurten
+_port_locks_guard = threading.Lock()
+_active_ports = set()           # poorten met een draaiende poller (scan sluit die niet)
+SCAN_TIMEOUT = 0.3              # seconden per adres tijdens een scan
+
+
+def port_lock(port):
+    with _port_locks_guard:
+        return _port_locks.setdefault(port, threading.Lock())
+
+
+def scan_bus(bus, slave_ids, instrument_factory=open_instrument):
+    """Welke slave-adressen antwoorden op de XY-MD02-registers (functiecode 4, register 1-2)?
+
+    Geeft [{'slave_id', 'temperature', 'humidity'}] of {'slave_id', 'error'} voor een slave die antwoordt maar
+    de registers niet kent. Wacht op de poller van dezelfde poort (zelfde verbinding), zodat antwoorden niet
+    door elkaar lopen. SerialException (interface weg) gaat door naar de aanroeper.
+    """
+    probe = {'function_code': 4, 'register_temp': 1, 'register_humidity': 2, 'scale_temp': 0.1, 'scale_humidity': 0.1,
+             'data_type': 'int16', 'byte_order': 'ABCD'}
+    found, instrument = [], None
+    with port_lock(bus['port']):
+        try:
+            for slave_id in slave_ids:
+                instrument = instrument_factory(bus, {**probe, 'slave_id': slave_id})
+                instrument.serial.timeout = SCAN_TIMEOUT
+                try:
+                    temperature, humidity = read_device(instrument, {**probe, 'slave_id': slave_id})
+                    found.append({'slave_id': slave_id, 'temperature': temperature, 'humidity': humidity})
+                except minimalmodbus.NoResponseError:
+                    continue
+                except minimalmodbus.ModbusException as e:   # antwoordt wel, maar andere registers/functiecode
+                    found.append({'slave_id': slave_id, 'error': str(e)})
+        finally:
+            if instrument is not None:
+                instrument.serial.timeout = bus['timeout']
+                if bus['port'] not in _active_ports:
+                    try:
+                        instrument.serial.close()
+                    except Exception:
+                        pass
+    return found
 
 
 class Writer(threading.Thread):
@@ -133,6 +208,13 @@ class BusPoller(threading.Thread):
         self.stop_event.set()
 
     def run(self):
+        _active_ports.add(self.bus['port'])
+        try:
+            self.loop()
+        finally:
+            _active_ports.discard(self.bus['port'])
+
+    def loop(self):
         backoff = 1
         while not self.stop_event.is_set():
             instruments = {}
@@ -142,10 +224,11 @@ class BusPoller(threading.Thread):
                 backoff = 1
                 while not self.stop_event.is_set():
                     started = time.time()
-                    for device in self.devices:
-                        if self.stop_event.is_set():
-                            break
-                        self.poll(instruments[device['id']], device)
+                    with port_lock(self.bus['port']):   # een scan van deze poort gaat om beurten met het uitlezen
+                        for device in self.devices:
+                            if self.stop_event.is_set():
+                                break
+                            self.poll(instruments[device['id']], device)
                     interval = settings.get('poll_interval_seconds')
                     self.stop_event.wait(max(0, interval - (time.time() - started)))
             except (serial.SerialException, OSError) as e:
@@ -182,8 +265,9 @@ class BusPoller(threading.Thread):
         devices.report_ok(device['id'], temperature, humidity)
         values = {'temperature': temperature, 'humidity': humidity, 'dewpoint': dewpoint,
                   'absolute_humidity': absolute_humidity}
-        alerts.evaluate(device, values)
-        mqtt_publisher.store(device, values)
+        wood_emc = wood.update(device['id'], temperature, humidity)   # altijd: houtvochtregels werken ook als het verborgen is
+        alerts.evaluate(device, {**values, 'wood_emc': wood_emc})
+        mqtt_publisher.store(device, {**values, 'wood_emc': wood_emc} if settings.get('show_wood') else values)
         self.last_errors.pop(device['id'], None)
         if settings.get('debug_logging'):
             print(f"{datetime.now().strftime('%H:%M:%S')} - {device['name']}: {temperature:.1f}°C, {humidity:.1f}%")

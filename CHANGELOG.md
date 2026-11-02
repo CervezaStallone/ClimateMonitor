@@ -2,6 +2,30 @@
 
 All notable changes to Climate Monitor. Older versions: see the [GitHub releases](https://github.com/CervezaStallone/ClimateMonitor/releases).
 
+## [2.3.0] - 2026-11-02
+
+### Added
+- **Wood moisture** (equilibrium moisture content, USDA Wood Handbook) per sensor, with its own diagram, a correction for the wood species and a response time (averaged value, so short peaks do not trigger alarms). On/off in Settings → Display.
+- **Warning and alarm level** per limit, e.g. a warning at 18 % and an alarm at 20 % wood moisture.
+- **Zones** in the Mollier and wood diagram: coloured areas of temperature × humidity from min/max or drawn freely in the Mollier diagram, with a notification when a sensor leaves a desired zone or enters a danger zone.
+- **Alarm window** from the top bar with muting per alarm (15 minutes to 24 hours).
+- **Dark/light toggle** in the top bar, remembered per browser.
+- **Logo** in the top bar and as favicon.
+- Per sensor: **data type** (int16, uint16, int32, uint32, float32), **byte order** (ABCD, DCBA, BADC, CDAB) and a **calibration correction** for temperature and humidity.
+- **Scan** in Settings → Modbus finds which slave addresses answer on a bus.
+
+### Changed
+- Buses, sensors and limits are edited with normal form fields instead of a table: arrow keys move the cursor and the dropdowns work reliably. The port field suggests detected adapters (stable `/dev/serial/by-id` names first).
+- Dew point uses the Magnus formula instead of a rule of thumb (new measurements only); the comfort score uses the same dew point.
+- `?tab=settings` disappears from the address bar when you go back to the dashboard.
+
+### Fixed
+- Saving settings no longer repeats notifications for alarms that are already active.
+- An impossible raw humidity is rejected instead of being shown as 0 %.
+- Long status texts on the meter cards no longer overflow.
+
+**Upgrading:** see [Updating to a new version](README.md#updating-to-a-new-version). The database is upgraded automatically: existing sensors become int16 / ABCD without correction (same readings as before), existing limits get the level *Alarm*. Reload the dashboard with `Ctrl+F5` afterwards.
+
 ## [2.2.0] - 2026-10-30
 
 ### Changed

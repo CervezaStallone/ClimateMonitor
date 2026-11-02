@@ -47,6 +47,9 @@ def fresh_settings():
     alerts._state.clear()
     alerts._offline.clear()
     alerts._first_seen.clear()
+    alerts._mutes.clear()
+    import zones
+    zones._cache = None
     while not alerts._outbox.empty():
         alerts._outbox.get_nowait()
 
@@ -389,6 +392,26 @@ class FakeInstrument:
             raise minimalmodbus.NoResponseError('No communication with the instrument (no answer)')
         return self.registers[register]
 
+    def read_registers(self, register, count, functioncode):
+        if self.fail:
+            raise minimalmodbus.NoResponseError('No communication with the instrument (no answer)')
+        return [self.registers[register + i] & 0xFFFF for i in range(count)]
+
+
+def test_poller_decodes_data_type_and_byte_order():
+    """32-bit float met verwisselde woorden (CDAB) en 16-bit unsigned met verwisselde bytes (DCBA)."""
+    fresh_settings()
+    q = queue.Queue()
+    dev = {**device('Float', register_temp=1, register_humidity=3, scale_temp=1, scale_humidity=1,
+                    data_type='float32', byte_order='CDAB'), 'id': 1}
+    poller = modbus_reader.BusPoller({**bus(), 'id': 1}, [dev], q)
+    poller.poll(FakeInstrument({1: 0x0000, 2: 0x41AC, 3: 0x0000, 4: 0x425D}), dev)   # 21.5 °C, 55.25 %
+    assert q.get_nowait()[1:3] == (21.5, 55.25)
+    dev = {**device('Swap', data_type='uint16', byte_order='DCBA'), 'id': 1}
+    poller.poll(FakeInstrument({1: 0x2C01, 2: 0x2602}), dev)                         # 0x012C = 30.0, 0x0226 = 55.0
+    assert q.get_nowait()[1:3] == (30.0, 55.0)
+    assert devices.validate_config([bus()], [device(data_type='int64')])[2] == {'devices': {0: {'data_type': 'err_choice'}}}
+
 
 def test_poller_reads_signed_scaled_values_and_isolates_failures():
     fresh_settings()
@@ -404,6 +427,72 @@ def test_poller_reads_signed_scaled_values_and_isolates_failures():
     assert row[1:3] == (-5.5, 87.3) and row[5] == 1 and q.empty()
     assert devices.status(1)['temperature'] == -5.5 and devices.status(1)['error'] is None
     assert 'no answer' in devices.status(2)['error'] and 'out of range' in devices.status(3)['error']
+
+
+def test_scan_bus_finds_responding_slaves():
+    """Scan: welke slave-adressen antwoorden (met waarden), zonder het uitlezen van dezelfde poort te storen."""
+    sensors = {1: FakeInstrument({1: 182, 2: 667}), 5: FakeInstrument({1: -12, 2: 900})}
+    opened = []
+
+    def factory(bus_cfg, dev):
+        opened.append(dev['slave_id'])
+        return sensors.get(dev['slave_id'], FakeInstrument(fail=True))
+    found = modbus_reader.scan_bus({**bus(), 'id': 1}, range(1, 7), factory)
+    assert opened == [1, 2, 3, 4, 5, 6]
+    assert found == [{'slave_id': 1, 'temperature': 18.2, 'humidity': 66.7},
+                     {'slave_id': 5, 'temperature': -1.2, 'humidity': 90.0}]
+    assert not modbus_reader.port_lock('/dev/ttyUSB0').locked()
+
+
+def test_poller_waits_while_port_is_scanned():
+    fresh_settings()
+    q = queue.Queue()
+    lock = modbus_reader.port_lock('/dev/ttyUSB0')
+    poller = modbus_reader.BusPoller({**bus(), 'id': 1}, [{**device(), 'id': 1}], q,
+                                     lambda bus_cfg, dev: FakeInstrument({1: 200, 2: 500}))
+    with lock:                                   # scan bezig
+        poller.start()
+        time.sleep(0.6)
+        assert q.empty() and '/dev/ttyUSB0' in modbus_reader._active_ports
+    time.sleep(0.6)
+    poller.stop()
+    poller.join(timeout=3)
+    assert not q.empty() and '/dev/ttyUSB0' not in modbus_reader._active_ports
+
+
+def test_scan_button_requires_login_and_lists_results():
+    import dash
+    import settings_ui
+    fresh_settings()
+    devices.init_devices()
+    app = dash.Dash(__name__, suppress_callback_exceptions=True)
+    settings_ui.register_settings_callbacks(app)
+    scan = next(e['callback'].__wrapped__ for e in app.callback_map.values()
+                if getattr(e['callback'], '__wrapped__', None) and e['callback'].__wrapped__.__name__ == 'scan_bus_now')
+    original_scan, original_login = modbus_reader.scan_bus, auth.is_logged_in
+    calls = []
+    modbus_reader.scan_bus = lambda bus_cfg, ids: calls.append(bus_cfg['port']) or [
+        {'slave_id': 1, 'temperature': 18.2, 'humidity': 66.7}, {'slave_id': 3, 'error': 'Illegal data address'}]
+    try:
+        with app.server.test_request_context():
+            assert scan(1, 'Bus 1', 'nl') == TRANSLATIONS_NL['settings_locked'] and calls == []
+            auth.is_logged_in = lambda: True
+            result = str(scan(1, 'Bus 1', 'nl'))
+    finally:
+        modbus_reader.scan_bus, auth.is_logged_in = original_scan, original_login
+    assert calls == ['/dev/ttyTEST0'] and '18.2' in result and 'Illegal data address' in result
+
+
+def test_settings_page_has_scan_button():
+    import settings_ui
+    fresh_settings()
+    devices.init_devices()
+    original, auth.is_logged_in = auth.is_logged_in, lambda: True
+    try:
+        page = str(settings_ui.render_settings('nl'))
+    finally:
+        auth.is_logged_in = original
+    assert 'scan-bus-btn' in page and 'scan-bus-select' in page and 'scan-result' in page
 
 
 def test_poller_survives_missing_interface():
@@ -472,25 +561,390 @@ def test_settings_callbacks_require_login():
         fn = getattr(entry['callback'], '__wrapped__', None)
         if fn:
             callbacks[fn.__name__] = fn
-    rows = [bus()]
     with app.server.test_request_context():
-        assert callbacks['add_bus'](1, rows) is dash.no_update
-        assert callbacks['add_device'](1, [], rows) is dash.no_update
-        assert callbacks['update_bus_choices'](rows, {}) is dash.no_update
+        assert callbacks['edit_buses'](1, [], [], 'nl') is dash.no_update
+        assert callbacks['edit_devices'](1, [], [], [], 'nl') is dash.no_update
+        assert callbacks['update_bus_choices'](['Bus 1']) is dash.no_update
         assert callbacks['refresh_device_status'](3, 'settings', 'nl') is dash.no_update
-        assert all(v is dash.no_update for v in callbacks['show_modbus_errors'](1, rows, [], 'nl', []))
-        errors, status, _ = callbacks['save_settings'](1, [], 'nl', rows, [], [])
+        assert all(v is dash.no_update for v in callbacks['show_modbus_errors'](1, [], [], [], [], 'nl'))
+        errors, status, _ = callbacks['save_settings'](1, [], 'nl', [], [], [], [])
         assert errors is dash.no_update and status == TRANSLATIONS_NL['settings_locked']
         assert callbacks['change_password'](1, 'x', 'y', 'y', 'nl')[0] == TRANSLATIONS_NL['settings_locked']
         assert 'admin' not in str(callbacks['show_settings']('settings', 'nl'))   # alleen het inlogscherm
-        assert callbacks['add_rule'](1, []) is dash.no_update
+        assert callbacks['edit_rules'](1, [], [], 'nl') is dash.no_update
+        assert callbacks['edit_zones'](1, [], [], 'nl') is dash.no_update
         assert callbacks['send_test'](1, 0, [], 'nl') == TRANSLATIONS_NL['settings_locked']
         assert callbacks['refresh_alert_log'](5, 'settings', 'nl') is dash.no_update
         assert callbacks['test_mqtt'](1, [], 'nl') == TRANSLATIONS_NL['settings_locked']
         assert callbacks['refresh_mqtt_status'](3, 'settings', 'nl') is dash.no_update
-    assert set(callbacks) >= {'add_bus', 'add_device', 'update_bus_choices', 'refresh_device_status',
+    assert set(callbacks) >= {'edit_buses', 'edit_devices', 'update_bus_choices', 'refresh_device_status',
                               'show_modbus_errors', 'save_settings', 'change_password', 'show_settings',
-                              'add_rule', 'send_test', 'refresh_alert_log', 'test_mqtt', 'refresh_mqtt_status'}
+                              'edit_rules', 'edit_zones', 'send_test', 'refresh_alert_log', 'test_mqtt', 'refresh_mqtt_status'}
+
+
+def components(node):
+    """Alle Dash componenten in een boom."""
+    yield node
+    children = getattr(node, 'children', None)
+    for child in children if isinstance(children, (list, tuple)) else [children]:
+        if hasattr(child, 'to_plotly_json'):
+            yield from components(child)
+
+
+def test_config_forms_round_trip():
+    """Bussen, sensoren en regels zijn gewone formuliervelden; terug uitgelezen leveren ze dezelfde rijen."""
+    import settings_ui
+    from dash import html
+    names = setup_alerts([{'scope': 0, 'metric': 'humidity', 'max_value': 70, 'level': 'warning', 'enabled': 'true'}])
+    t = TRANSLATIONS['nl']
+    rows = {}
+    for table in ('buses', 'devices', 'rules'):
+        form = html.Div(settings_ui.row_form(table, settings_ui.table_rows(table), t))
+        assert not any(type(c).__name__ == 'DataTable' for c in components(form))
+        fields = [c for c in components(form) if isinstance(getattr(c, 'id', None), dict) and c.id.get('type') == 'cfg']
+        rows[table] = settings_ui.collect([{'id': c.id, 'value': c.value} for c in fields])
+    assert [d['name'] for d in rows['devices']] == ['Koelcel', 'Kas'] and rows['devices'][0]['enabled'] == 'true'
+    assert rows['devices'][0]['id'] == names['Koelcel']['id']
+    assert devices.validate_config(rows['buses'], rows['devices'])[2] == {}
+    assert alerts.validate_rules(rows['rules'])[1] == {} and rows['rules'][0]['level'] == 'warning'
+
+
+def test_zone_form_round_trip():
+    """Zones in Settings: rechthoek via min/max-velden, getekende vorm blijft behouden (geen min/max-velden)."""
+    import settings_ui
+    import zones
+    from dash import html
+    setup_alerts([])
+    assert zones.save([
+        {'scope': 0, 'name': 'Comfort', 'color': 'green', 'mode': 'keep_inside', 'level': 'warning',
+         'temp_min': 18, 'temp_max': 24, 'rh_min': 40, 'rh_max': 60, 'enabled': 'true'},
+        {'scope': 0, 'name': 'Getekend', 'color': 'red', 'mode': 'keep_outside', 'level': 'alarm', 'shape': 'polygon',
+         'points': '[[10, 80], [30, 85], [20, 95]]', 'enabled': 'true'}]) == {}
+    form = html.Div(settings_ui.row_form('zones', settings_ui.table_rows('zones'), TRANSLATIONS['nl']))
+    fields = [c for c in components(form) if isinstance(getattr(c, 'id', None), dict) and c.id.get('type') == 'cfg']
+    assert not any(c.id['row'] == 1 and c.id['field'] == 'temp_min' for c in fields)
+    assert TRANSLATIONS_NL['zone_free_shape'] in str(form)
+    rows = settings_ui.collect([{'id': c.id, 'value': c.value} for c in fields])
+    assert zones.save(rows) == {}
+    assert [z['points'] for z in zones.load()] == [[[18.0, 40.0], [24.0, 40.0], [24.0, 60.0], [18.0, 60.0]],
+                                                   [[10.0, 80.0], [30.0, 85.0], [20.0, 95.0]]]
+
+
+def test_sensor_form_has_data_type_and_byte_order():
+    import settings_ui
+    from dash import html
+    setup_alerts([])
+    form = html.Div(settings_ui.row_form('devices', settings_ui.table_rows('devices'), TRANSLATIONS['nl']))
+    fields = {c.id['field']: c for c in components(form)
+              if isinstance(getattr(c, 'id', None), dict) and c.id.get('type') == 'cfg' and c.id['row'] == 0}
+    assert fields['data_type'].value == 'int16' and fields['byte_order'].value == 'ABCD'
+    assert [o['value'] for o in fields['data_type'].options] == devices.DEVICE_FIELDS['data_type']['choices']
+    assert [o['value'] for o in fields['byte_order'].options] == devices.DEVICE_FIELDS['byte_order']['choices']
+
+
+def test_zones_rectangle_and_free_shape():
+    """Zone = veelhoek in temperatuur × RV; rechthoek uit min/max of vrij getekend."""
+    import zones
+    names = setup_alerts([])
+    kas = names['Kas']['id']
+    rect = {'scope': 0, 'name': 'Comfort', 'color': 'green', 'mode': 'keep_inside', 'level': 'warning',
+            'temp_min': 18, 'temp_max': 24, 'rh_min': 40, 'rh_max': 60, 'enabled': 'true'}
+    free = {'scope': kas, 'name': 'Schimmel', 'color': 'red', 'mode': 'keep_outside', 'level': 'alarm',
+            'shape': 'polygon', 'points': '[[10, 80], [30, 80], [30, 100], [10, 100]]', 'enabled': 'true'}
+    assert zones.validate([{**rect, 'temp_min': 30}])[1] == {0: {'temp_max': 'err_min_max'}}
+    assert zones.validate([{**rect, 'color': 'pink'}])[1] == {0: {'color': 'err_choice'}}
+    assert zones.save([rect, free]) == {}
+    comfort, mold = zones.load()
+    assert comfort['points'] == [[18.0, 40.0], [24.0, 40.0], [24.0, 60.0], [18.0, 60.0]]
+    assert zones.contains(comfort, 20, 50) and not zones.contains(comfort, 20, 70)
+    assert zones.contains(mold, 20, 90) and not zones.contains(mold, 20, 60)
+    assert [z['name'] for z in zones.effective(kas)] == ['Comfort', 'Schimmel']
+    assert [z['name'] for z in zones.effective(names['Koelcel']['id'])] == ['Comfort']
+
+
+def test_zone_alarms_on_leaving_and_entering():
+    import zones
+    names = setup_alerts([])
+    assert settings.save({'alert_delay_seconds': 0}) == {}
+    assert zones.save([
+        {'scope': 0, 'name': 'Comfort', 'color': 'green', 'mode': 'keep_inside', 'level': 'warning',
+         'temp_min': 18, 'temp_max': 24, 'rh_min': 40, 'rh_max': 60, 'enabled': 'true'},
+        {'scope': 0, 'name': 'Schimmel', 'color': 'red', 'mode': 'keep_outside', 'level': 'alarm',
+         'temp_min': 10, 'temp_max': 30, 'rh_min': 80, 'rh_max': 100, 'enabled': 'true'}]) == {}
+    cel = names['Koelcel']
+    alerts.evaluate(cel, {'temperature': 20.0, 'humidity': 50.0}, now=1)
+    assert outbox_texts() == []
+    alerts.evaluate(cel, {'temperature': 20.0, 'humidity': 85.0}, now=2)
+    texts = outbox_texts()
+    assert len(texts) == 2 and any('buiten zone Comfort' in x for x in texts) and any('in zone Schimmel' in x for x in texts)
+    assert alerts.device_status(cel['id']) == ('alarm', {'zone': 'alarm'})
+    alerts.evaluate(cel, {'temperature': 20.0, 'humidity': 50.0}, now=3)
+    assert len(outbox_texts()) == 2 and alerts.device_status(cel['id'])[0] == 'ok'
+
+
+def test_zones_drawn_in_mollier_and_wood_diagram():
+    import callbacks
+    import zones
+    from dash import Dash
+    setup_alerts([])
+    assert settings.save({'show_wood': ['on']}) == {}
+    assert zones.save([{'scope': 0, 'name': 'Opslag', 'color': 'blue', 'mode': 'none', 'level': 'alarm',
+                        'temp_min': 10, 'temp_max': 20, 'rh_min': 50, 'rh_max': 70, 'enabled': 'true'}]) == {}
+    app = Dash(__name__)
+    callbacks.register_callbacks(app)
+    for output in ('psychrometric-chart.figure', 'wood-chart.figure'):
+        fig = run_callback(app, output, 0, 'nl', 0, *(['dashboard'] if output == 'wood-chart.figure' else [False]),
+                           trigger='selected-language.data')
+        zone = next(trace for trace in fig.data if trace.name == 'Opslag')
+        assert zone.fill == 'toself' and zone.line.color == zones.COLORS['blue'], output
+
+
+def test_zone_alarm_has_margin_at_the_edge():
+    """Herstel pas als de sensor de hysterese (0.5 °C / 2 % RV) van de rand af is: geen klapperen op de grens."""
+    import zones
+    names = setup_alerts([])
+    assert settings.save({'alert_delay_seconds': 0, 'alert_hysteresis_temp': 0.5, 'alert_hysteresis_humidity': 2}) == {}
+    assert zones.save([
+        {'scope': 0, 'name': 'Comfort', 'color': 'green', 'mode': 'keep_inside', 'level': 'alarm',
+         'temp_min': 18, 'temp_max': 24, 'rh_min': 40, 'rh_max': 60, 'enabled': 'true'},
+        {'scope': 0, 'name': 'Schimmel', 'color': 'red', 'mode': 'keep_outside', 'level': 'alarm',
+         'temp_min': 0, 'temp_max': 40, 'rh_min': 80, 'rh_max': 100, 'enabled': 'true'}]) == {}
+    cel = names['Koelcel']
+    alerts.evaluate(cel, {'temperature': 20.0, 'humidity': 61.0}, now=1)       # Comfort verlaten
+    assert len(outbox_texts()) == 1
+    alerts.evaluate(cel, {'temperature': 20.0, 'humidity': 59.5}, now=2)       # net binnen: nog geen herstel
+    assert outbox_texts() == []
+    alerts.evaluate(cel, {'temperature': 20.0, 'humidity': 57.0}, now=3)       # 3 % binnen de rand: hersteld
+    assert len(outbox_texts()) == 1
+    kas = names['Kas']
+    alerts.evaluate(kas, {'temperature': 20.0, 'humidity': 81.0}, now=5)        # Schimmel binnen (en Comfort uit)
+    outbox_texts()
+    alerts.evaluate(kas, {'temperature': 20.0, 'humidity': 79.0}, now=6)        # net buiten Schimmel: nog alarm
+    assert not any('Schimmel' in x for x in outbox_texts())
+    alerts.evaluate(kas, {'temperature': 20.0, 'humidity': 77.0}, now=7)
+    assert any('Schimmel' in x for x in outbox_texts())
+
+
+def test_drawn_mollier_path_becomes_zone_points():
+    """Plotly tekenpad (x = °C, y = g/kg) naar zonepunten in °C × RV."""
+    import psychrometric
+    points = psychrometric.path_to_points('M20,7.29L30,13.31L25,40Z')
+    assert [round(t) for t, _ in points] == [20, 30, 25]
+    assert abs(points[0][1] - 50) < 1 and abs(points[1][1] - 50) < 1 and points[2][1] == 100   # boven verzadiging: 100 %
+
+
+def test_save_drawn_zone_only_when_logged_in():
+    import callbacks
+    import zones
+    from dash import Dash
+    setup_alerts([])
+    app = Dash(__name__)
+    callbacks.register_callbacks(app)
+    path = 'M20,7.29L30,13.31L25,4Z'
+    with app.server.test_request_context():
+        msg, drawing, _ = run_callback(app, 'draw-zone-msg.children', 1, path, 'Droog', 'keep_outside', 'red', 0, 'nl',
+                                       trigger='save-zone-btn.n_clicks')
+        assert msg == TRANSLATIONS_NL['draw_login'] and zones.load() == []   # dashboard kan publiek zijn
+        original, auth.is_logged_in = auth.is_logged_in, lambda: True
+        try:
+            assert run_callback(app, 'draw-zone-msg.children', 1, None, 'Droog', 'keep_outside', 'red', 0, 'nl',
+                                trigger='save-zone-btn.n_clicks')[0] == TRANSLATIONS_NL['draw_empty']
+            msg, drawing, _ = run_callback(app, 'draw-zone-msg.children', 1, path, 'Droog', 'keep_outside', 'red', 0, 'nl',
+                                           trigger='save-zone-btn.n_clicks')
+        finally:
+            auth.is_logged_in = original
+    assert msg == TRANSLATIONS_NL['draw_saved'] and drawing is False
+    zone = zones.load()[0]
+    assert zone['name'] == 'Droog' and zone['shape'] == 'polygon' and len(zone['points']) == 3 and zone['mode'] == 'keep_outside' and zone['color'] == 'red'
+
+
+def test_draw_mode_pauses_live_mollier_and_keeps_path():
+    import callbacks
+    import layout
+    from dash import Dash
+    setup_alerts([])
+    rendered = str(layout.create_layout())
+    assert 'draw-zone-btn' in rendered and 'draw-bar' in rendered
+    assert 'draw-zone-mode' in rendered and 'draw-zone-color' in rendered
+    app = Dash(__name__)
+    callbacks.register_callbacks(app)
+    drawing, bar, _ = run_callback(app, '..zone-drawing.data...draw-bar.style', 1, 0, trigger='draw-zone-btn.n_clicks')
+    assert drawing is True and bar == {}
+    assert run_callback(app, 'psychrometric-chart.figure', 1, 'nl', 0, True, trigger='graph-update.n_intervals') \
+        is callbacks.no_update                                          # live-verversing zou de tekening wissen
+    assert run_callback(app, 'zone-draw-path.data', {'shapes': [{'path': 'M1,2L3,4L5,6Z'}]}, True,
+                        trigger='psychrometric-chart.relayoutData') == 'M1,2L3,4L5,6Z'
+    drawing, bar, _ = run_callback(app, '..zone-drawing.data...draw-bar.style', 1, 1, trigger='cancel-zone-btn.n_clicks')
+    assert drawing is False and bar == {'display': 'none'}
+
+
+def test_zone_alarm_does_not_stick_after_zones_are_saved_again():
+    """Opslaan geeft zones nieuwe id's (bv. na tekenen): een alarm op een oude zone mag niet blijven hangen."""
+    import zones
+    names = setup_alerts([])
+    assert settings.save({'alert_delay_seconds': 0}) == {}
+    danger = {'scope': 0, 'name': 'Schimmel', 'color': 'red', 'mode': 'keep_outside', 'level': 'alarm',
+              'temp_min': 10, 'temp_max': 30, 'rh_min': 80, 'rh_max': 100, 'enabled': 'true'}
+    assert zones.save([danger]) == {}
+    cel = names['Koelcel']
+    alerts.evaluate(cel, {'temperature': 20.0, 'humidity': 85.0}, now=1)
+    assert alerts.device_status(cel['id'])[0] == 'alarm'
+    assert zones.save([{**danger, 'mode': 'none'}]) == {}                       # nieuwe id, geen alarm meer
+    alerts.evaluate(cel, {'temperature': 20.0, 'humidity': 85.0}, now=2)
+    assert alerts.device_status(cel['id']) == ('ok', {})
+
+
+def test_muted_alarm_is_listed_but_sends_nothing():
+    names = setup_alerts([{'scope': 0, 'metric': 'temperature', 'max_value': 8, 'enabled': 'true'}])
+    assert settings.save({'alert_delay_seconds': 0}) == {}
+    cel = names['Koelcel']
+    alerts.evaluate(cel, {'temperature': 9.0}, now=1000)
+    assert len(outbox_texts()) == 1
+    active = alerts.active_alarms(now=1000)
+    assert [(a['device'], a['metric'], a['level'], a['phase'], a['since'], a['muted_until']) for a in active] == \
+        [('Koelcel', 'temperature', 'alarm', 'alarm', 1000, None)]
+    alerts.mute(cel['id'], 'temperature', 3600, now=1000)
+    alerts.evaluate(cel, {'temperature': 5.0}, now=1100)              # herstel tijdens dempen: geen melding
+    alerts.evaluate(cel, {'temperature': 9.0}, now=1200)              # nieuw alarm tijdens dempen: geen melding
+    assert outbox_texts() == []
+    assert alerts.active_alarms(now=1200)[0]['muted_until'] == 4600
+    alerts.evaluate(cel, {'temperature': 5.0}, now=4700)              # demping voorbij: herstel wordt weer gemeld
+    assert len(outbox_texts()) == 1
+    alerts.evaluate(cel, {'temperature': 9.0}, now=4800)
+    alerts.mute(cel['id'], 'temperature', 3600, now=4800)
+    alerts.unmute(cel['id'], 'temperature')
+    alerts.evaluate(cel, {'temperature': 5.0}, now=4900)
+    assert len(outbox_texts()) == 2
+
+
+def test_alarm_window_lists_alarms_and_mutes_when_logged_in():
+    import json
+    import callbacks
+    import layout
+    from dash import Dash
+    names = setup_alerts([{'scope': 0, 'metric': 'temperature', 'max_value': 8, 'enabled': 'true'}])
+    alerts._mutes.clear()
+    assert settings.save({'alert_delay_seconds': 0}) == {}
+    cel = names['Koelcel']
+    alerts.evaluate(cel, {'temperature': 9.0})
+    assert 'alarm-modal' in str(layout.create_layout())
+    app = Dash(__name__)
+    callbacks.register_callbacks(app)
+    assert run_callback(app, 'alarm-modal.style', 1, 0, trigger='status-summary.n_clicks') == {}
+    assert run_callback(app, 'alarm-modal.style', 1, 1, trigger='close-alarm-modal.n_clicks') == {'display': 'none'}
+    mute = json.dumps({'device': cel['id'], 'metric': 'temperature', 'minutes': 60, 'type': 'mute'},
+                      separators=(',', ':')) + '.n_clicks'
+    with app.server.test_request_context():
+        listing = str(run_callback(app, 'alarm-list.children', 0, [1], 'nl', {}, trigger=mute, value=1))
+        assert 'Koelcel' in listing and not alerts.is_muted(cel['id'], 'temperature')   # dashboard kan publiek zijn
+        assert TRANSLATIONS_NL['mute_login'] in listing
+        original, auth.is_logged_in = auth.is_logged_in, lambda: True
+        try:
+            listing = str(run_callback(app, 'alarm-list.children', 0, [1], 'nl', {}, trigger=mute, value=1))
+        finally:
+            auth.is_logged_in = original
+    assert alerts.is_muted(cel['id'], 'temperature') and TRANSLATIONS_NL['muted_until'].split('{')[0] in listing
+
+
+def test_theme_follows_browser_choice_before_setting():
+    """Schakelaar in de kopbalk: keuze per browser (cookie); zonder keuze de standaard uit Settings."""
+    import callbacks
+    from flask import Flask
+    fresh_settings()
+    assert settings.save({'dashboard_theme': 'dark'}) == {}
+    server = Flask(__name__)
+    with server.test_request_context(headers={'Cookie': 'theme=light'}):
+        assert callbacks.theme_mode() == 'light'
+    with server.test_request_context(headers={'Cookie': 'theme=paars'}):
+        assert callbacks.theme_mode() == 'dark'
+    with server.test_request_context():
+        assert callbacks.theme_mode() == 'dark'
+    assert callbacks.theme_mode() == 'dark'                                     # buiten een request (threads)
+
+
+def test_theme_toggle_in_header_remembers_choice():
+    import callbacks
+    import layout
+    from dash import Dash
+    from dash._callback_context import context_value
+    fresh_settings()
+    app = Dash(__name__)
+    callbacks.register_callbacks(app)
+    with app.server.test_request_context(headers={'Cookie': 'theme=light'}):
+        root = layout.create_layout()
+        toggle = next(c for c in components(root) if getattr(c, 'id', None) == 'theme-toggle')
+        assert root.className == 'theme-light' and toggle.value == 'light'
+    css_class, applied = run_callback(app, 'theme-applied.data', 'dark', trigger='theme-toggle.value')
+    assert css_class == 'theme-dark' and applied == 'dark'
+    assert 'theme=dark' in context_value.get().dash_response.headers.get('Set-Cookie')
+
+
+def test_logo_in_header_and_as_favicon():
+    import layout
+    fresh_settings()
+    assert os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets', 'logo.svg'))
+    root = layout.create_layout()
+    assert any(getattr(c, 'src', None) == '/assets/logo.svg' for c in components(root))
+    assert 'rel="icon"' in layout.HTML_TEMPLATE and '/assets/logo.svg' in layout.HTML_TEMPLATE
+
+
+def test_saving_settings_does_not_repeat_active_alarms():
+    """Opslaan zonder wijziging aan een regel of zone: actief alarm blijft, geen nieuwe melding."""
+    import settings_ui
+    import zones
+    rule = {'scope': 0, 'metric': 'temperature', 'max_value': 8, 'enabled': 'true'}
+    names = setup_alerts([rule])
+    assert settings.save({'alert_delay_seconds': 0}) == {}
+    assert zones.save([{'scope': 0, 'name': 'Schimmel', 'color': 'red', 'mode': 'keep_outside', 'level': 'alarm',
+                        'temp_min': 0, 'temp_max': 40, 'rh_min': 80, 'rh_max': 100, 'enabled': 'true'}]) == {}
+    cel = names['Koelcel']
+    alerts.evaluate(cel, {'temperature': 9.0, 'humidity': 85.0}, now=1)
+    assert len(outbox_texts()) == 2
+    assert alerts.save_rules([rule]) == {}                                          # zelfde regel
+    assert zones.save(settings_ui.table_rows('zones')) == {}                        # zelfde zone (zelfde id)
+    alerts.evaluate(cel, {'temperature': 9.0, 'humidity': 85.0}, now=2)
+    assert outbox_texts() == [] and alerts.device_status(cel['id'])[0] == 'alarm'
+    assert alerts.save_rules([{**rule, 'max_value': 8.5}]) == {}                    # grens gewijzigd: opnieuw beoordelen
+    alerts.evaluate(cel, {'temperature': 9.0, 'humidity': 85.0}, now=3)
+    assert any('maximum van 8.5' in x for x in outbox_texts())
+
+
+def test_board_shows_zone_alarm():
+    import json
+    import callbacks
+    import plotly
+    import zones
+    from dash import Dash
+    names = setup_alerts([])
+    database.init_database()
+    conn = sqlite3.connect(settings.DB_FILE)
+    conn.execute(f'INSERT INTO {database.get_table_name()} (timestamp, temperature, humidity, device_id) VALUES (?, 20, 85, ?)',
+                 (int(time.time()), names['Koelcel']['id']))
+    conn.commit()
+    conn.close()
+    assert settings.save({'alert_delay_seconds': 0}) == {}
+    assert zones.save([{'scope': 0, 'name': 'Schimmel', 'color': 'red', 'mode': 'keep_outside', 'level': 'alarm',
+                        'temp_min': 10, 'temp_max': 30, 'rh_min': 80, 'rh_max': 100, 'enabled': 'true'}]) == {}
+    alerts.evaluate(names['Koelcel'], {'temperature': 20.0, 'humidity': 85.0})
+    app = Dash(__name__)
+    callbacks.register_callbacks(app)
+    board, _ = run_callback(app, 'device-overview.children', 0, 'nl', 'board', 'dashboard', trigger='view-toggle.value')
+    assert 'Alarm · Zone' in json.dumps(board, cls=plotly.utils.PlotlyJSONEncoder, ensure_ascii=False)
+
+
+def test_tab_and_url_stay_in_sync():
+    """Terug naar het dashboard haalt ?tab=settings uit de adresbalk; F5 op settings blijft op settings."""
+    import dash
+    import settings_ui
+    fresh_settings()
+    app = dash.Dash(__name__, suppress_callback_exceptions=True)
+    settings_ui.register_settings_callbacks(app)
+    assert run_callback(app, 'main-tabs.value', '?tab=settings', 'dashboard', trigger='url.search') == \
+        ('settings', dash.no_update)
+    assert run_callback(app, 'main-tabs.value', '?tab=settings', 'dashboard', trigger='main-tabs.value') == \
+        (dash.no_update, '')
+    assert run_callback(app, 'main-tabs.value', '', 'settings', trigger='main-tabs.value') == \
+        (dash.no_update, '?tab=settings')
 
 
 # --- meldingen -----------------------------------------------------------------
@@ -552,8 +1006,8 @@ def test_rule_validation_and_override():
     assert alerts.validate_rules([{'scope': 0, 'metric': 'humidity', 'max_value': 5}] * 2)[1] == {1: {'metric': 'err_duplicate'}}
     assert alerts.save_rules([{'scope': 0, 'metric': 'humidity', 'max_value': 70, 'enabled': 'true'},
                               {'scope': kas, 'metric': 'humidity', 'max_value': 90, 'enabled': 'true'}]) == {}
-    assert alerts.effective_rules(kas)['humidity']['max_value'] == 90
-    assert alerts.effective_rules(names['Koelcel']['id'])['humidity']['max_value'] == 70
+    assert alerts.effective_rules(kas)[('humidity', 'alarm')]['max_value'] == 90
+    assert alerts.effective_rules(names['Koelcel']['id'])[('humidity', 'alarm')]['max_value'] == 70
 
 
 def test_alarm_delay_single_alert_and_recovery():
@@ -603,6 +1057,7 @@ def test_new_sensor_without_readings_gets_full_offline_period():
     names = setup_alerts([])
     settings.save({'alert_offline_minutes': 5})
     alerts._first_seen.clear()
+    alerts._mutes.clear()
     alerts.check_offline(now=10_000)                         # net toegevoegd, nog geen meting
     alerts.check_offline(now=10_000 + 4 * 60)
     assert outbox_texts() == []
@@ -741,6 +1196,214 @@ def test_mqtt_test_connection_reports_errors():
     config.update(mqtt_host='127.0.0.1', mqtt_port=port)
     error = mqtt_publisher.test_connection(config)
     assert error and 'refused' in error.lower()
+
+
+# --- houtvocht en kalibratie ---------------------------------------------------
+
+def test_wood_emc_matches_wood_handbook():
+    import wood
+    fresh_settings()
+    for temp, rh, expected in ((20, 65, 12.0), (20, 85, 18.0), (20, 90, 20.5)):
+        assert abs(float(wood.emc(temp, rh)) - expected) < 0.2, (temp, rh)
+    assert settings.save({'wood_emc_offset': -1.5}) == {}
+    assert abs(float(wood.value(20, 65)) - 10.5) < 0.2
+    line = wood.iso_line(18, [20])                       # RV waarbij het gecorrigeerde houtvocht 18 % is
+    assert abs(float(wood.value(20, line[0])) - 18) < 0.05
+
+
+def test_wood_value_follows_air_slowly_and_starts_from_history():
+    import wood
+    fresh_settings()
+    database.init_database()
+    wood._smooth.clear()
+    assert settings.save({'wood_response_hours': 24}) == {}
+    now = int(time.time())
+    conn = sqlite3.connect(settings.DB_FILE)
+    conn.executemany(f'INSERT INTO {database.get_table_name()} (timestamp, temperature, humidity, device_id) '
+                     'VALUES (?, 20, 65, 1)', [(now - s,) for s in range(1, 600, 60)])
+    conn.commit()
+    conn.close()
+    first = wood.update(1, 20, 90, now=now)              # natte lucht, maar het hout zat op 12 % (geen vals alarm)
+    assert abs(first - 12.0) < 0.2
+    after_day = wood.update(1, 20, 90, now=now + 86400)  # na één reactietijd ~63 % van de weg naar 20.5 %
+    assert 17 < after_day < 18.5 and wood.current(1) == after_day
+    settings.save({'wood_response_hours': 0})
+    assert abs(wood.update(1, 20, 65, now=now + 86401) - 12.0) < 0.2
+
+
+def test_calibration_offsets_and_dewpoint():
+    fresh_settings()
+    q = queue.Queue()
+    dev = {**device('Koelcel', offset_temp=-0.5, offset_humidity=3), 'id': 1}
+    poller = modbus_reader.BusPoller({**bus(), 'id': 1}, [dev], q)
+    poller.poll(FakeInstrument({1: 200, 2: 980}), dev)     # 20.0 °C / 98.0 % -> 19.5 °C / 100 % (begrensd)
+    assert q.get_nowait()[1:3] == (19.5, 100.0)
+    dew, _ = modbus_reader.derived_values(20.0, 50.0)
+    assert abs(dew - 9.3) < 0.1                            # Magnus; de oude vuistregel gaf 10.0
+    assert devices.validate_config([bus()], [device(offset_humidity=50)])[2] == \
+        {'devices': {0: {'offset_humidity': 'err_range'}}}
+    assert devices.save_config([bus()], [device(offset_temp=0.3)]) == {}
+    assert devices.load_config()[1][0]['offset_temp'] == 0.3
+
+
+def test_poller_feeds_wood_moisture_to_alarms_and_optionally_mqtt():
+    import wood
+    names = setup_alerts([{'scope': 0, 'metric': 'wood_emc', 'max_value': 20, 'enabled': 'true'}])
+    assert settings.save({'alert_delay_seconds': 0, 'wood_response_hours': 0, 'show_wood': []}) == {}
+    wood._smooth.clear()
+    dev = {**devices.load_config()[1][0], 'id': names['Koelcel']['id']}
+    poller = modbus_reader.BusPoller({**bus(), 'id': 1}, [dev], queue.Queue())
+    poller.poll(FakeInstrument({1: 200, 2: 920}), dev)     # 20 °C / 92 % -> ~21.7 % houtvocht
+    assert 'maximum van 20.0' in outbox_texts()[0]
+    assert 'wood_emc' not in mqtt_publisher._latest[dev['id']]['values']
+    assert settings.save({'show_wood': ['on']}) == {}
+    poller.poll(FakeInstrument({1: 200, 2: 920}), dev)
+    assert abs(mqtt_publisher._latest[dev['id']]['values']['wood_emc'] - 21.7) < 0.3
+
+
+def test_wood_ui_follows_setting():
+    import callbacks
+    import layout
+    import settings_ui
+    import wood
+    fresh_settings()
+    t = TRANSLATIONS['nl']
+    assert 'wood_emc' not in [o['value'] for o in layout.metric_options(t)]
+    assert layout.wood_style() == {'display': 'none'}
+    assert settings.save({'show_wood': ['on']}) == {}
+    assert 'wood_emc' in [o['value'] for o in layout.metric_options(t)] and layout.wood_style() == {}
+    fig = wood.figure([('Kas', 20.0, 85.0, '#2a78d6')], [(None, 18, 'warning'), (None, 20, 'alarm')], t,
+                      callbacks.THEMES['dark'])
+    names = [trace.name for trace in fig.data]
+    assert 'Kas' in names and 'Waarschuwing ≥ 18 %' in names and 'Alarm ≥ 20 %' in names
+    assert {'offset_temp', 'offset_humidity'} <= set(settings_ui.DEVICE_COLUMNS) and 'wood' in settings_ui.SECTIONS
+
+
+def test_wood_graph_and_zones_from_rules():
+    import callbacks
+    import pandas as pd
+    names = setup_alerts([{'scope': 0, 'metric': 'wood_emc', 'max_value': 18, 'level': 'warning', 'enabled': 'true'},
+                          {'scope': 0, 'metric': 'humidity', 'max_value': 80, 'enabled': 'true'}])
+    kas = names['Kas']['id']
+    alerts.save_rules([{'scope': 0, 'metric': 'wood_emc', 'max_value': 18, 'level': 'warning', 'enabled': 'true'},
+                       {'scope': kas, 'metric': 'wood_emc', 'max_value': 16, 'level': 'warning', 'enabled': 'true'}])
+    assert callbacks.wood_zones(None) == [(None, 18.0, 'warning')]
+    assert callbacks.wood_zones(kas) == [(None, 16.0, 'warning')]
+    df = pd.DataFrame({'timestamp': [1], 'temperature': [20.0], 'humidity': [65.0], 'device_id': [1]})
+    fig = callbacks.metric_figure(df, {1: 'Kas'}, {}, 'wood_emc', TRANSLATIONS['nl'], 'dark')
+    assert abs(fig.data[0].y[0] - 12.0) < 0.2
+
+
+def run_callback(app, output, *args, trigger, value=None):
+    """Roep een geregistreerde Dash callback aan alsof 'trigger' net veranderde (naar value)."""
+    from dash._callback_context import context_value
+    from dash._utils import AttributeDict
+    from flask import Response
+    context_value.set(AttributeDict(triggered_inputs=[{'prop_id': trigger, 'value': value}], dash_response=Response()))
+    key = output if output in app.callback_map else next(k for k in app.callback_map if output in k)
+    return app.callback_map[key]['callback'].__wrapped__(*args)
+
+
+def test_wood_chart_and_board_follow_setting():
+    import json
+    import callbacks
+    import plotly
+    from dash import Dash
+    names = setup_alerts([{'scope': 0, 'metric': 'wood_emc', 'max_value': 18, 'level': 'warning', 'enabled': 'true'}])
+    database.init_database()
+    conn = sqlite3.connect(settings.DB_FILE)
+    conn.execute(f'INSERT INTO {database.get_table_name()} (timestamp, temperature, humidity, device_id) VALUES (?, 20, 85, ?)',
+                 (int(time.time()), names['Koelcel']['id']))
+    conn.commit()
+    conn.close()
+    app = Dash(__name__)
+    callbacks.register_callbacks(app)
+    assert run_callback(app, 'wood-chart.figure', 0, 'nl', 0, 'dashboard', trigger='selected-language.data') is \
+        callbacks.no_update                                  # houtvocht staat uit
+    assert settings.save({'show_wood': ['on']}) == {}
+    fig = run_callback(app, 'wood-chart.figure', 0, 'nl', 0, 'dashboard', trigger='selected-language.data')
+    assert {'Koelcel', 'Waarschuwing ≥ 18 %'} <= {trace.name for trace in fig.data}
+    board, _ = run_callback(app, 'device-overview.children', 0, 'nl', 'board', 'dashboard', trigger='view-toggle.value')
+    assert 'Houtvocht' in json.dumps(board, cls=plotly.utils.PlotlyJSONEncoder, ensure_ascii=False)
+
+
+def test_wood_column_stays_visible_on_phones():
+    """Houtvocht is voor wie het aanzet de hoofdwaarde: geen col-wide (die is verborgen op smalle schermen)."""
+    import callbacks
+    from dash import Dash
+    setup_alerts([])
+    assert settings.save({'show_wood': ['on']}) == {}
+    app = Dash(__name__)
+    callbacks.register_callbacks(app)
+    board, _ = run_callback(app, 'device-overview.children', 0, 'nl', 'board', 'dashboard', trigger='view-toggle.value')
+    head = board.children.children[0].children.children
+    wood_head = next(cell for cell in head if cell is not None and TRANSLATIONS_NL['wood_emc'] in str(cell.children))
+    assert 'col-wide' not in (wood_head.className or '')
+
+
+def test_board_has_short_headers_for_phones():
+    """Lange woorden als 'Luchtvochtigheid' passen niet op een telefoon: daar korte koppen."""
+    import callbacks
+    from dash import Dash
+    setup_alerts([])
+    assert settings.save({'show_wood': ['on']}) == {}
+    app = Dash(__name__)
+    callbacks.register_callbacks(app)
+    board, _ = run_callback(app, 'device-overview.children', 0, 'nl', 'board', 'dashboard', trigger='view-toggle.value')
+    head = board.children.children[0].children.children
+    shorts = [span.children for cell in head if cell is not None and isinstance(cell.children, list)
+              for span in cell.children if getattr(span, 'className', '') == 'th-short']
+    assert shorts == [TRANSLATIONS_NL['short_temperature'], TRANSLATIONS_NL['short_humidity'], TRANSLATIONS_NL['short_wood']]
+
+
+def test_invalid_humidity_is_rejected_not_clamped_to_zero():
+    """Alleen de correctie mag worden begrensd; een kapotte ruwe meting blijft een fout (geen stille 0 %)."""
+    fresh_settings()
+    q = queue.Queue()
+    dev = {**device('Koelcel'), 'id': 1}
+    poller = modbus_reader.BusPoller({**bus(), 'id': 1}, [dev], q)
+    poller.poll(FakeInstrument({1: 188, 2: -50}), dev)      # -5.0 % RV: onmogelijk
+    assert q.empty() and 'out of range' in devices.status(1)['error']
+
+
+def test_rule_hint_explains_levels():
+    for lang, texts in TRANSLATIONS.items():
+        assert texts['opt_level_warning'].lower() in texts['hint_rules'].lower(), lang
+
+
+def test_comfort_uses_same_dewpoint_as_measurements():
+    import callbacks
+    assert callbacks.humidex_score(26, 30) == 4     # Magnus: humidex 26.0; de oude vuistregel gaf 28.3 (score 5)
+
+
+def test_wood_value_restarts_when_wood_settings_change():
+    """Andere correctie of reactietijd: niet dagenlang naar de nieuwe waarde kruipen, maar opnieuw beginnen."""
+    import wood
+    fresh_settings()
+    database.init_database()
+    wood._smooth.clear()
+    assert settings.save({'wood_response_hours': 24, 'wood_emc_offset': 0}) == {}
+    now = int(time.time())
+    assert abs(wood.update(1, 20, 65, now=now) - 12.0) < 0.2
+    assert settings.save({'wood_emc_offset': -2}) == {}
+    assert abs(wood.update(1, 20, 65, now=now + 60) - 10.0) < 0.2
+
+
+def test_warning_and_alarm_levels():
+    names = setup_alerts([{'scope': 0, 'metric': 'wood_emc', 'max_value': 18, 'level': 'warning', 'enabled': 'true'},
+                          {'scope': 0, 'metric': 'wood_emc', 'max_value': 20, 'level': 'alarm', 'enabled': 'true'}])
+    assert settings.save({'alert_delay_seconds': 0, 'alert_hysteresis_wood': 0.5}) == {}
+    cel = names['Koelcel']
+    alerts.evaluate(cel, {'wood_emc': 18.5}, now=1)
+    texts = outbox_texts()
+    assert len(texts) == 1 and 'waarschuwingsgrens van 18.0' in texts[0]
+    assert alerts.device_status(cel['id']) == ('warn', {'wood_emc': 'pending'})
+    alerts.evaluate(cel, {'wood_emc': 20.4}, now=2)
+    assert 'maximum van 20.0' in outbox_texts()[0]
+    assert alerts.device_status(cel['id']) == ('alarm', {'wood_emc': 'alarm'})
+    rule = {'scope': 0, 'metric': 'wood_emc', 'max_value': 18, 'level': 'warning'}
+    assert alerts.validate_rules([rule, rule])[1] == {1: {'metric': 'err_duplicate'}}
+    assert alerts.validate_rules([{**rule, 'level': 'x'}])[1] == {0: {'level': 'err_choice'}}
 
 
 # --- vertalingen --------------------------------------------------------------

@@ -47,6 +47,7 @@ jobs:
         python -m py_compile settings.py
         python -m py_compile devices.py
         python -m py_compile alerts.py
+        python -m py_compile wood.py
         python -m py_compile mqtt_publisher.py
         python -m py_compile settings_ui.py
         python -m py_compile auth.py

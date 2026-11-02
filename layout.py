@@ -1,7 +1,9 @@
 from dash import dcc, html
+from flask import has_request_context, request
 
 import devices
 import settings
+import zones
 from translations import LANGUAGE_NAMES, TRANSLATIONS
 
 # Design tokens per thema (CSS variabelen) en componentstijlen. Alles lokaal: geen externe fonts of CDN's.
@@ -11,10 +13,10 @@ HTML_TEMPLATE = '''
     <head>
         {%metas%}
         <title>{%title%}</title>
-        {%favicon%}
+        <link rel="icon" type="image/svg+xml" href="/assets/logo.svg">
         {%css%}
         <style>
-            .theme-dark, body:has(.theme-dark), .theme-dark .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner table {
+            .theme-dark, body:has(.theme-dark) {
                 --bg: #1b1f23; --panel: #24292e; --panel-2: #1f2428; --line: #343a41; --line-strong: #4a525a;
                 --text: #e6e8e3; --muted: #a2a9a2; --cell: #141a17; --digit: #d4ecc9;
                 --accent: #6aa8e8; --accent-ink: #0f1a26; --hover: #2c3238;
@@ -22,7 +24,7 @@ HTML_TEMPLATE = '''
                 --alarm-cell: #3a1d1b; --warn-cell: #33291a;
                 color-scheme: dark;
             }
-            .theme-light, body:has(.theme-light), .theme-light .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner table {
+            .theme-light, body:has(.theme-light) {
                 --bg: #e8e9e4; --panel: #f7f7f3; --panel-2: #fbfbf8; --line: #cdd0c9; --line-strong: #a9ada5;
                 --text: #1b1f23; --muted: #555c55; --cell: #dde5d6; --digit: #1e2a1b;
                 --accent: #1f5fa8; --accent-ink: #ffffff; --hover: #eceee8;
@@ -30,9 +32,8 @@ HTML_TEMPLATE = '''
                 --alarm-cell: #f6dcd9; --warn-cell: #f6ead0;
                 color-scheme: light;
             }
-            /* De DataTable zet eigen --accent/--hover/--muted op zijn tabel (roze focus, witte opties): thema-tokens
-               hierboven daarom ook op die tabel. Ook op body: keuzelijsten en datumkiezers van Dash renderen hun
-               uitklapmenu direct onder body, buiten #app-root. */
+            /* Thema-tokens ook op body: keuzelijsten en datumkiezers van Dash renderen hun uitklapmenu direct
+               onder body, buiten #app-root. */
             body {
                 --Dash-Stroke-Strong: var(--line-strong); --Dash-Stroke-Weak: var(--line);
                 --Dash-Fill-Interactive-Strong: var(--accent); --Dash-Fill-Interactive-Weak: var(--hover);
@@ -57,6 +58,8 @@ HTML_TEMPLATE = '''
             .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
                       padding: 10px 24px; background: var(--panel); border-bottom: 1px solid var(--line); }
             .topbar-left, .topbar-right { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; }
+            .brand-wrap { display: flex; align-items: center; gap: 10px; }
+            .brand-logo { width: 26px; height: 26px; display: block; }
             .brand { font-weight: 700; letter-spacing: .08em; text-transform: uppercase; font-size: 13px; }
             .summary { font-family: var(--mono); font-size: 12px; color: var(--muted); letter-spacing: .04em; }
             .summary .n-alarm { color: var(--alarm); } .summary .n-warn { color: var(--warn); }
@@ -108,6 +111,7 @@ HTML_TEMPLATE = '''
             /* Bord */
             .board-wrap { overflow-x: auto; }
             .board { width: 100%; border-collapse: collapse; }
+            .board .th-short { display: none; }
             .board th { text-align: left; font-weight: 600; font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
                         color: var(--muted); padding: 10px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
             .board td { padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
@@ -125,20 +129,29 @@ HTML_TEMPLATE = '''
             .meters { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
             .meter { background: var(--panel); border: 1px solid var(--line); border-top: 3px solid var(--st); padding: 14px 16px; }
             .meter-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
-            .meter .name { font-weight: 600; display: flex; align-items: center; gap: 8px; }
+            .meter-head > div:first-child { min-width: 0; flex: 1 1 auto; }
+            .meter-head .st { white-space: normal; flex: 0 1 auto; max-width: 58%; align-items: flex-start; line-height: 1.35; }
+            .meter-head .st::before { margin-top: 4px; }
+            .meter .name { font-weight: 600; display: flex; align-items: center; gap: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
             .meter .where { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 2px; }
             .meter-display { background: var(--cell); margin-top: 12px; padding: 12px 14px; display: grid; gap: 6px; }
             .meter-display .v1, .meter-display .v2 { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--digit); line-height: 1.1; }
             .meter-display .v1 { font-size: 46px; } .meter-display .v2 { font-size: 28px; }
             .meter-display .u { font-size: 13px; color: var(--muted); margin-left: 6px; }
             .meter-display .is-alarm { color: var(--alarm); } .meter-display .is-warn { color: var(--warn); }
-            .meter-stats { display: flex; justify-content: space-between; gap: 8px; margin-top: 10px; font-family: var(--mono); font-size: 12px; color: var(--muted); }
+            .meter-stats .is-alarm { color: var(--alarm); font-weight: 600; } .meter-stats .is-warn { color: var(--warn); font-weight: 600; }
+            .meter-stats { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 14px; margin-top: 10px; font-family: var(--mono); font-size: 12px; color: var(--muted); }
+            .meter-stats > span { white-space: nowrap; }
             .meter .spark { margin-top: 8px; width: 100%; }
             .empty { padding: 28px; color: var(--muted); }
 
             /* Mollier + historie */
             .history-bar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 0 16px 14px; }
             .hint { color: var(--muted); font-size: 13px; }
+            .draw-bar { display: grid; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--panel-2); }
+            .draw-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+            .draw-actions .input { width: 220px; max-width: 100%; }
+            .draw-select { width: 230px; max-width: 100%; }
             .slider-box { padding: 4px 16px 18px; }
             .slider-time { font-family: var(--mono); font-size: 15px; margin-bottom: 8px; }
 
@@ -182,6 +195,16 @@ HTML_TEMPLATE = '''
             .modal h3 { margin: 0 0 8px; font-size: 18px; }
             .modal h4 { margin: 20px 0 10px; font-size: 12px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
             .modal-close { position: absolute; top: 14px; right: 16px; font-size: 18px; }
+            .modal-wide { max-width: 760px; }
+            .summary-btn { background: none; border: 1px solid transparent; padding: 5px 8px; cursor: pointer; text-align: left; }
+            .summary-btn:hover { border-color: var(--line); background: var(--hover); }
+            .alarm-items { list-style: none; margin: 8px 0 0; padding: 0; border-top: 1px solid var(--line); }
+            .alarm-item { padding: 12px 0; border-bottom: 1px solid var(--line); display: grid; gap: 6px; }
+            .alarm-item.is-muted { opacity: .65; }
+            .alarm-what { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+            .alarm-when { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+            .alarm-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+            .alarm-actions .cfg-label { margin-right: 4px; }
             .presets { display: flex; flex-wrap: wrap; gap: 8px; }
             .time-row { display: flex; align-items: center; gap: 6px; margin: 8px 0 14px; }
             .time-row input { width: 72px; }
@@ -203,14 +226,29 @@ HTML_TEMPLATE = '''
             .msg-err { color: var(--alarm); font-weight: 600; margin-top: 10px; }
             .locked { text-align: center; padding: 40px 20px; }
             .settings-head { display: flex; justify-content: space-between; align-items: center; }
-            .settings-actions { position: sticky; bottom: 0; background: var(--panel); border-top: 1px solid var(--line);
+            .settings-actions { position: sticky; bottom: 0; z-index: 20; background: var(--panel); border-top: 1px solid var(--line);
                                 padding: 12px 0; margin-top: 24px; display: flex; align-items: center; gap: 16px; }
             .status-list { margin: 0; padding-left: 18px; font-size: 13px; }
             .status-list li { margin: 3px 0; }
             .table-actions { margin: 8px 0 4px; }
-            .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner input { color: var(--text) !important; background: var(--panel-2) !important; }
-            .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner td.focused { background: var(--hover) !important; }
-            .dash-table-container .dash-delete-cell, .dash-table-container .dash-select-cell { background: var(--panel) !important; color: var(--muted) !important; }
+
+            /* Bussen, sensoren en grenswaarden: één regel velden per item, lijnen ertussen */
+            .cfg-list { border-top: 1px solid var(--line); margin: 6px 0 12px; }
+            .cfg-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(116px, 1fr)); gap: 10px 14px;
+                       align-items: end; padding: 12px 0 14px; border-bottom: 1px solid var(--line); }
+            .cfg-cell { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+            .cfg-cell.wide { grid-column: span 2; }
+            .cfg-label { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+            .cfg-cell .input { width: 100%; min-width: 0; font-variant-numeric: tabular-nums; }
+            .cfg-switch { padding: 7px 0; white-space: nowrap; }
+            .cfg-cell.is-invalid .cfg-label { color: var(--alarm); font-weight: 600; }
+            .cfg-cell.is-invalid .input, .cfg-cell.is-invalid .dash-dropdown { outline: 2px solid var(--alarm); outline-offset: -1px; }
+            .cfg-remove { justify-self: start; padding: 8px 0; }
+            .cfg-remove:hover { color: var(--alarm); }
+            .cfg-empty { padding: 14px 0; color: var(--muted); font-size: 13px; border-bottom: 1px solid var(--line); }
+            .cfg-static { padding: 8px 0; color: var(--muted); font-size: 13px; }
+            .color-option { display: inline-flex; align-items: center; gap: 8px; }
+            .color-option .swatch { width: 12px; height: 12px; border-radius: 2px; }
 
             .site-footer { text-align: center; padding: 8px 16px 28px; font-size: 12px; color: var(--muted); }
             .site-footer a { color: var(--muted); text-underline-offset: 3px; }
@@ -227,11 +265,12 @@ HTML_TEMPLATE = '''
                 .panel-head { padding: 0 6px; }
                 .controls { width: 100%; } .controls > div:first-child, .controls > div:last-child { width: auto; flex: 1; min-width: 0; }
                 .board .col-status { display: none; } .st.st-inline { display: inline-flex; }
+                .board th { padding: 8px 5px; } .board .th-full { display: none; } .board .th-short { display: inline; }
+                .board td { padding: 8px 5px; } .board .lcd { font-size: 16px; padding: 4px 6px; } .board .lcd .u { font-size: 10px; margin-left: 2px; }
+                .board .name { font-size: 14px; }
                 .tabs label { padding: 10px 9px 8px; }
                 .settings { padding: 14px; }
-                .settings .dash-spreadsheet-container { overflow-x: auto; }
-                /* Scrollende tabel knipt een open keuzelijst af: zolang die open is ruimte eronder maken */
-                .settings .dash-spreadsheet-container:has(.Select.is-open) { padding-bottom: 210px; }
+                .cfg-row { grid-template-columns: 1fr 1fr; }
             }
         </style>
     </head>
@@ -246,9 +285,10 @@ HTML_TEMPLATE = '''
 </html>
 '''
 
-METRICS = ['temperature', 'humidity', 'dewpoint', 'absolute_humidity', 'comfort']
+METRICS = ['temperature', 'humidity', 'dewpoint', 'absolute_humidity', 'comfort', 'wood_emc']
 METRIC_LABEL_KEYS = {'temperature': 'temperature', 'humidity': 'humidity', 'dewpoint': 'dewpoint',
-                     'absolute_humidity': 'abs_humidity', 'comfort': 'comfort'}
+                     'absolute_humidity': 'abs_humidity', 'comfort': 'comfort', 'wood_emc': 'wood_emc'}
+OPTIONAL_METRICS = {'comfort': 'show_comfort', 'wood_emc': 'show_wood'}   # grootheid -> aan/uit instelling
 TIME_RANGES = [('last_1min', 1), ('last_5min', 5), ('last_15min', 15), ('last_30min', 30), ('last_1hour', 60),
                ('last_6hours', 360), ('last_12hours', 720), ('last_24hours', 1440), ('last_7days', 10080),
                ('last_14days', 20160), ('last_1month', 43200), ('last_3months', 129600),
@@ -266,7 +306,7 @@ def view_options(t):
 
 def metric_options(t):
     return [{'label': t[METRIC_LABEL_KEYS[m]], 'value': m} for m in METRICS
-            if m != 'comfort' or settings.get('show_comfort')]
+            if m not in OPTIONAL_METRICS or settings.get(OPTIONAL_METRICS[m])]
 
 
 def device_options(t):
@@ -279,16 +319,49 @@ def mollier_style():
     return {} if settings.get('show_mollier') else {'display': 'none'}
 
 
+def wood_style():
+    return {} if settings.get('show_wood') else {'display': 'none'}
+
+
 def range_options(t):
     return [{'label': t[key], 'value': value} for key, value in TIME_RANGES]
 
 
+THEMES = ('dark', 'light')
+
+
+def current_theme():
+    """Thema: keuze van deze browser (cookie van de schakelaar in de kopbalk), anders de standaard uit Settings.
+
+    Ook de grafieken (op de server gekleurd) gebruiken dit: elke callback is een request met de cookie.
+    """
+    mode = request.cookies.get('theme') if has_request_context() else None
+    if mode not in THEMES:
+        mode = settings.get('dashboard_theme')
+    return mode if mode in THEMES else 'dark'
+
+
+def zone_mode_options(t):
+    return [{'label': t[f'opt_mode_{mode}'], 'value': mode} for mode in zones.MODES]
+
+
+def zone_color_options(t):
+    return [{'label': html.Span([html.Span(className='swatch', style={'--series': hex_color}), t[f'opt_color_{name}']],
+                                className='color-option'), 'value': name} for name, hex_color in zones.COLORS.items()]
+
+
+def theme_options(t):
+    return [{'label': t[f'opt_dashboard_theme_{mode}'], 'value': mode} for mode in THEMES]
+
+
 def create_layout():
-    """Creëert de hoofdlayout (per page load: taal, thema en weergave uit Settings)"""
+    """Creëert de hoofdlayout (per page load: taal en weergave uit Settings, thema van deze browser)"""
     lang = settings.get('default_language')
     t = TRANSLATIONS[lang]
-    return html.Div(id='app-root', className=f"theme-{settings.get('dashboard_theme')}", children=[
+    theme = current_theme()
+    return html.Div(id='app-root', className=f'theme-{theme}', children=[
         dcc.Location(id='url', refresh=False),
+        dcc.Store(id='theme-applied'),
         dcc.Store(id='selected-language', data=lang),
         dcc.Store(id='graph-relayout-data', data={}),
         dcc.Store(id='historical-data-store'),
@@ -298,13 +371,17 @@ def create_layout():
 
         html.Header(className='topbar', children=[
             html.Div(className='topbar-left', children=[
-                html.Span(id='brand', className='brand', children=t['app_name']),
+                html.Div(className='brand-wrap', children=[
+                    html.Img(src='/assets/logo.svg', className='brand-logo', alt=''),
+                    html.Span(id='brand', className='brand', children=t['app_name']),
+                ]),
                 dcc.RadioItems(id='main-tabs', className='nav', options=nav_options(t), value='dashboard'),
             ]),
             html.Div(className='topbar-right', children=[
-                html.Span(id='status-summary', className='summary'),
+                html.Button(id='status-summary', className='summary summary-btn', n_clicks=0, title=t['alarms_open']),
                 dcc.RadioItems(id='view-toggle', className='seg', options=view_options(t),
                                value=settings.get('dashboard_view')),
+                dcc.RadioItems(id='theme-toggle', className='seg', options=theme_options(t), value=theme),
                 dcc.Dropdown(id='language-selector', className='lang', clearable=False, searchable=False,
                              options=[{'label': LANGUAGE_NAMES[code], 'value': code} for code in LANGUAGE_NAMES],
                              value=lang),
@@ -332,6 +409,24 @@ def create_layout():
             html.Section(id='mollier-panel', className='panel', style=mollier_style(), children=[
                 html.Div(className='panel-head', children=[
                     html.Span(id='label-psychrometric-chart', className='panel-title', children=t['psychrometric_chart']),
+                    html.Button(t['btn_draw_zone'], id='draw-zone-btn', n_clicks=0, className='btn btn-small'),
+                ]),
+                # Zone tekenen: zolang dit open is pauzeert de live-verversing (die zou de tekening wissen)
+                dcc.Store(id='zone-drawing', data=False),
+                dcc.Store(id='zone-draw-path'),
+                html.Div(id='draw-bar', className='draw-bar', style={'display': 'none'}, children=[
+                    html.Div(t['hint_draw_zone'], id='draw-zone-hint', className='hint'),
+                    html.Div(className='draw-actions', children=[
+                        dcc.Input(id='draw-zone-name', type='text', placeholder=t['lbl_zone_name'], className='input',
+                                  maxLength=50),
+                        dcc.Dropdown(id='draw-zone-mode', options=zone_mode_options(t), value='keep_outside',
+                                     clearable=False, searchable=False, className='draw-select'),
+                        dcc.Dropdown(id='draw-zone-color', options=zone_color_options(t), value='red',
+                                     clearable=False, searchable=False, className='draw-select'),
+                        html.Button(t['btn_save_zone'], id='save-zone-btn', n_clicks=0, className='btn btn-primary btn-small'),
+                        html.Button(t['btn_cancel'], id='cancel-zone-btn', n_clicks=0, className='btn btn-small'),
+                        html.Span(id='draw-zone-msg', className='hint'),
+                    ]),
                 ]),
                 html.Div(className='panel-body', children=dcc.Graph(
                     id='psychrometric-chart', config={'displaylogo': False, 'displayModeBar': False})),
@@ -345,6 +440,25 @@ def create_layout():
                     html.Div(id='slider-timestamp-display', className='slider-time'),
                     dcc.Slider(id='historical-time-slider', min=0, max=100, step=1, value=0, marks={},
                                tooltip={'placement': 'bottom', 'always_visible': False}, allow_direct_input=False),
+                ]),
+            ]),
+
+            html.Section(id='wood-panel', className='panel', style=wood_style(), children=[
+                html.Div(className='panel-head', children=[
+                    html.Span(id='label-wood-chart', className='panel-title', children=t['wood_chart']),
+                ]),
+                html.Div(className='panel-body', children=dcc.Graph(
+                    id='wood-chart', config={'displaylogo': False, 'displayModeBar': False})),
+            ]),
+
+            # Alarmvenster: actieve alarmen en waarschuwingen, dempen per sensor + grootheid
+            html.Div(id='alarm-modal', className='modal-backdrop', style={'display': 'none'}, children=[
+                html.Div(className='modal modal-wide', role='dialog', **{'aria-modal': 'true', 'aria-labelledby': 'alarm-title'},
+                         children=[
+                    html.H3(t['alarms_title'], id='alarm-title'),
+                    html.Button('✕', id='close-alarm-modal', n_clicks=0, className='btn btn-link modal-close',
+                                title=t['btn_close']),
+                    html.Div(id='alarm-list'),
                 ]),
             ]),
 

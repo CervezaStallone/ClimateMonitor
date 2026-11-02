@@ -1,17 +1,23 @@
+import json
 import sqlite3
 import math
 import pandas as pd
 from datetime import datetime, timedelta
-from dash import callback_context, html, no_update, Input, Output, State
+from dash import ALL, Patch, callback_context, html, no_update, Input, Output, State
 import plotly.graph_objects as go
 
 import alerts
+import auth
 import devices
 import layout
 import settings
+import settings_ui
+import wood
+import zones
 from translations import TRANSLATIONS
 from database import get_all_measurement_tables, build_union_query, DB_FILE
-from psychrometric import add_device_points, create_psychrometric_chart, create_psychrometric_chart_historical
+from modbus_reader import derived_values
+from psychrometric import add_device_points, add_zones, path_to_points, create_psychrometric_chart, create_psychrometric_chart_historical
 
 # Categorisch palet per sensor (vaste volgorde, gevalideerd op kleurenblindheid en contrast).
 # Sensor 9 en verder krijgen een neutrale kleur; status-kleuren worden nooit voor sensoren gebruikt.
@@ -27,14 +33,16 @@ THEMES = {
                   hover='#eceee8', ok='#0b8a0b', warn='#c98500', alarm='#d03b3b', offline='#7d838a'),
 }
 FONT = 'system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, sans-serif'
-METRIC_UNITS = {'temperature': '°C', 'humidity': '%', 'dewpoint': '°C', 'absolute_humidity': 'g/m³', 'comfort': ''}
+METRIC_UNITS = {'temperature': '°C', 'humidity': '%', 'dewpoint': '°C', 'absolute_humidity': 'g/m³', 'comfort': '',
+                'wood_emc': '%'}
 METRIC_KEYS = {'temperature': 'temperature', 'humidity': 'humidity', 'dewpoint': 'dewpoint',
-               'absolute_humidity': 'abs_humidity', 'comfort': 'comfort'}
+               'absolute_humidity': 'abs_humidity', 'comfort': 'comfort', 'wood_emc': 'wood_emc',
+               'zone': 'zone'}   # zone: alleen als statuslabel (alle zone-alarmen samen)
 
 
 def theme_mode():
-    mode = settings.get('dashboard_theme')
-    return mode if mode in THEMES else 'dark'
+    """Thema van deze browser (zie layout.current_theme)."""
+    return layout.current_theme()
 
 
 def device_colors(mode):
@@ -103,7 +111,7 @@ def humidex_score(temp, hum):
     """Comfort score 0-6 op basis van Humidex (Environment Canada schaal)"""
     if pd.isna(temp) or pd.isna(hum):
         return None
-    dewpoint_kelvin = temp - ((100 - hum) / 5.0) + 273.15
+    dewpoint_kelvin = derived_values(temp, hum)[0] + 273.15   # zelfde dauwpunt (Magnus) als de metingen
     e = 6.11 * math.exp(5417.7530 * ((1/273.16) - (1/dewpoint_kelvin)))
     humidex = temp + 0.5555 * (e - 10)
     for limit, score in ((20, 0), (27, 4), (30, 5), (35, 6), (40, 3), (46, 2), (54, 1)):
@@ -122,6 +130,8 @@ def metric_figure(df, names, colors, metric, t, mode):
             continue
         if metric == 'comfort':
             values = [humidex_score(tmp, hum) for tmp, hum in zip(group['temperature'], group['humidity'])]
+        elif metric == 'wood_emc':   # evenwichtswaarde van de lucht per interval (niet vertraagd)
+            values = wood.value(group['temperature'], group['humidity'])
         else:
             values = group[metric]
         fig.add_trace(go.Scatter(
@@ -137,6 +147,15 @@ def metric_figure(df, names, colors, metric, t, mode):
     if metric == 'comfort':
         fig.update_yaxes(range=[-0.5, 6.5], tickmode='linear', tick0=0, dtick=1)
     return fig
+
+
+def wood_zones(device_id):
+    """Houtvochtgrenzen uit de alarmregels: [(min, max, niveau)] voor één sensor of de globale regels."""
+    if device_id:
+        rules = alerts.effective_rules(device_id).values()
+    else:
+        rules = [r for r in alerts.load_rules() if r['enabled'] and r['device_id'] is None]
+    return [(r['min_value'], r['max_value'], r['level']) for r in rules if r['metric'] == 'wood_emc']
 
 
 def theme_mollier(fig, mode, point_color=None):
@@ -225,7 +244,9 @@ def register_callbacks(app):
          Output('metric-tabs', 'options'),
          Output('time-range-dropdown', 'options'),
          Output('label-psychrometric-chart', 'children'),
-         Output('label-time-position', 'children')],
+         Output('label-time-position', 'children'),
+         Output('label-wood-chart', 'children'),
+         Output('theme-toggle', 'options')],
         [Input('language-selector', 'value')]
     )
     def update_language(lang):
@@ -234,7 +255,8 @@ def register_callbacks(app):
             lang = 'en'
         t = TRANSLATIONS[lang]
         return (lang, t['app_name'], layout.nav_options(t), layout.view_options(t), layout.metric_options(t),
-                layout.range_options(t), t['psychrometric_chart'], t['time_position'])
+                layout.range_options(t), t['psychrometric_chart'], t['time_position'], t['wood_chart'],
+                layout.theme_options(t))
 
     @app.callback(
         [Output('page-dashboard', 'style'),
@@ -256,6 +278,21 @@ def register_callbacks(app):
         return f'theme-{theme_mode()}'
 
     @app.callback(
+        [Output('app-root', 'className', allow_duplicate=True),
+         Output('theme-applied', 'data')],
+        Input('theme-toggle', 'value'),
+        prevent_initial_call=True
+    )
+    def set_theme(mode):
+        """Schakelaar in de kopbalk: keuze per browser onthouden (cookie, 1 jaar).
+
+        'theme-applied' komt pas na dit antwoord (cookie staat dan in de browser): de grafiek hangt daaraan.
+        """
+        mode = mode if mode in THEMES else 'dark'
+        callback_context.response.set_cookie('theme', mode, max_age=365 * 86400, samesite='Lax')
+        return f'theme-{mode}', mode
+
+    @app.callback(
         [Output('live-graph', 'figure'),
          Output('data-count', 'children'),
          Output('graph-relayout-data', 'data')],
@@ -264,11 +301,13 @@ def register_callbacks(app):
          Input('live-graph', 'relayoutData'),
          Input('selected-language', 'data'),
          Input('device-selector', 'value'),
-         Input('metric-tabs', 'value')],
+         Input('metric-tabs', 'value'),
+         Input('theme-applied', 'data')],   # na de themaschakelaar meteen hertekenen
         [State('graph-relayout-data', 'data'),
          State('main-tabs', 'value')]
     )
-    def update_graph(n, time_range_minutes, relayout_data, lang, device_sel, metric, stored_relayout, tab):
+    def update_graph(n, time_range_minutes, relayout_data, lang, device_sel, metric, theme_applied, stored_relayout,
+                     tab):
         """Grafiek van één grootheid: één lijn per sensor of alleen de gekozen sensor"""
         metric = metric or 'temperature'
         time_range_minutes = time_range_minutes or 1440
@@ -296,16 +335,80 @@ def register_callbacks(app):
         fig = metric_figure(df, names, device_colors(mode), metric, t, mode)
         return fig, count_text, stored_relayout
 
+    @app.callback(
+        [Output('draw-zone-msg', 'children'),
+         Output('zone-drawing', 'data', allow_duplicate=True),
+         Output('draw-bar', 'style', allow_duplicate=True)],
+        Input('save-zone-btn', 'n_clicks'),
+        [State('zone-draw-path', 'data'),
+         State('draw-zone-name', 'value'),
+         State('draw-zone-mode', 'value'),
+         State('draw-zone-color', 'value'),
+         State('device-selector', 'value'),
+         State('selected-language', 'data')],
+        prevent_initial_call=True
+    )
+    def save_drawn_zone(n_clicks, path, name, mode, color, device_sel, lang):
+        """Getekende vorm opslaan als zone (alleen ingelogd: het dashboard kan publiek zijn)."""
+        t = TRANSLATIONS.get(lang) or TRANSLATIONS['en']
+        if not auth.is_logged_in():
+            return t['draw_login'], no_update, no_update
+        points = path_to_points(path)
+        if len(points) < 3:
+            return t['draw_empty'], no_update, no_update
+        rows = settings_ui.table_rows('zones') + [{
+            'scope': device_sel or 0, 'name': (name or '').strip() or f"{t['zone']} {len(zones.load()) + 1}",
+            'color': color or 'blue', 'mode': mode or 'none', 'level': 'warning', 'shape': 'polygon',
+            'points': json.dumps(points),
+            'enabled': 'true'}]
+        errors = zones.save(rows)
+        if errors:
+            return t['msg_save_failed'], no_update, no_update
+        return t['draw_saved'], False, {'display': 'none'}
+
+    @app.callback(
+        [Output('zone-drawing', 'data'),
+         Output('draw-bar', 'style'),
+         Output('psychrometric-chart', 'figure', allow_duplicate=True)],
+        [Input('draw-zone-btn', 'n_clicks'),
+         Input('cancel-zone-btn', 'n_clicks')],
+        prevent_initial_call=True
+    )
+    def toggle_zone_drawing(draw_clicks, cancel_clicks):
+        """Tekenmodus: Plotly tekent een gesloten pad; annuleren wist de tekening."""
+        drawing = callback_context.triggered_id == 'draw-zone-btn'
+        figure = Patch()
+        figure['layout']['dragmode'] = 'drawclosedpath' if drawing else 'zoom'
+        figure['layout']['newshape'] = {'line': {'color': zones.COLORS['blue'], 'width': 2},
+                                        'fillcolor': zones.fill_color('blue', 0.2)}
+        if not drawing:
+            figure['layout']['shapes'] = []
+        return drawing, {} if drawing else {'display': 'none'}, figure
+
+    @app.callback(
+        Output('zone-draw-path', 'data'),
+        Input('psychrometric-chart', 'relayoutData'),
+        State('zone-drawing', 'data'),
+        prevent_initial_call=True
+    )
+    def keep_drawn_path(relayout, drawing):
+        """Laatst getekende vorm onthouden (Plotly geeft alle vormen in 'shapes')."""
+        shapes = (relayout or {}).get('shapes')
+        if not drawing or not shapes:
+            return no_update
+        return shapes[-1].get('path')
+
     # Callback voor psychrometric chart
     @app.callback(
         Output('psychrometric-chart', 'figure'),
         [Input('graph-update', 'n_intervals'),
          Input('selected-language', 'data'),
-         Input('device-selector', 'value')]
+         Input('device-selector', 'value')],
+        State('zone-drawing', 'data')
     )
-    def update_psychrometric_chart(n, lang, device_sel):
+    def update_psychrometric_chart(n, lang, device_sel, drawing):
         """Update psychrometrisch diagram met actuele meetwaarden (alle devices of één device)"""
-        if not settings.get('show_mollier'):
+        if not settings.get('show_mollier') or drawing:   # tijdens tekenen niet verversen: wist de tekening
             return no_update
         if lang is None:
             lang = 'nl'
@@ -319,8 +422,30 @@ def register_callbacks(app):
         coldest = min((p[1] for p in points if p[1] is not None), default=0)
         if coldest < 0:
             fig.update_xaxes(range=[coldest - 3, 40])  # punten onder 0 °C zichtbaar houden
-        return fig
+        return add_zones(fig, zones.visible(device_sel))   # na theme_mollier: dat kleurt vlakken als comfortzone
     
+    @app.callback(
+        Output('wood-chart', 'figure'),
+        [Input('graph-update', 'n_intervals'),
+         Input('selected-language', 'data'),
+         Input('device-selector', 'value')],
+        State('main-tabs', 'value')
+    )
+    def update_wood_chart(n, lang, device_sel, tab):
+        """Houtvochtdiagram: actuele punten per sensor en de zones uit de houtvochtregels"""
+        if not settings.get('show_wood') or (callback_context.triggered_id == 'graph-update' and (n % 5 or tab == 'settings')):
+            return no_update
+        t = TRANSLATIONS.get(lang) or TRANSLATIONS['en']
+        mode = theme_mode()
+        colors = device_colors(mode)
+        latest = latest_per_device()
+        points = [(d['name'], latest[d['id']][1], latest[d['id']][2], colors.get(d['id'])) for d in devices.list_devices()
+                  if d['id'] in latest and (not device_sel or d['id'] == device_sel)]
+        fig = wood.figure(points, wood_zones(device_sel), t, THEMES[mode], zones.visible(device_sel))
+        fig = style_figure(fig, mode, height=520)
+        fig.update_layout(hovermode='closest', margin=dict(l=60, r=50, t=30, b=50))
+        return fig
+
     # Callback voor modal open/close
     @app.callback(
         Output('range-modal', 'style'),
@@ -654,9 +779,12 @@ def register_callbacks(app):
             else:
                 label, sub = t['st_never'], devices.status(device['id']).get('error') or ''
             score = humidex_score(temp, hum) if temp is not None else None
+            wood_now = wood.current(device['id'])
+            if wood_now is None and temp is not None:
+                wood_now = float(wood.value(temp, hum))
             states.append({
                 'id': device['id'], 'name': device['name'], 'status': status, 'phases': phases, 'label': label,
-                'sub': sub[:80], 'temp': temp, 'hum': hum, 'dew': dew, 'ah': ah,
+                'sub': sub[:80], 'temp': temp, 'hum': hum, 'dew': dew, 'ah': ah, 'wood': wood_now,
                 'comfort': t[f'comfort_{score}'] if score is not None else '—',
                 'where': f"{config.get('bus', '')} · #{config.get('slave_id', '')}",
             })
@@ -672,10 +800,17 @@ def register_callbacks(app):
         return html.Img(src=src, className='spark', alt='') if src else None
 
     def render_board(states, colors, t):
-        show_comfort = settings.get('show_comfort')
-        head = html.Tr([html.Th('', className='bar'), html.Th(t['hdr_sensor']), html.Th(t['temperature']), html.Th(t['humidity']),
+        show_comfort, show_wood = settings.get('show_comfort'), settings.get('show_wood')
+
+        def th(key, short_key, className=None):
+            """Kop met een korte variant voor smalle schermen (CSS toont één van beide)."""
+            return html.Th([html.Span(t[key], className='th-full'), html.Span(t[short_key], className='th-short')],
+                           className=className)
+        head = html.Tr([html.Th('', className='bar'), html.Th(t['hdr_sensor']), th('temperature', 'short_temperature'),
+                        th('humidity', 'short_humidity'),
                         html.Th(t['dewpoint'], className='col-wide'), html.Th(t['abs_humidity'], className='col-wide'),
                         html.Th(t['comfort'], className='col-wide') if show_comfort else None,
+                        th('wood_emc', 'short_wood', 'col-wood') if show_wood else None,
                         html.Th(t['hdr_trend'], className='col-wide'),
                         html.Th(t['hdr_status'], className='col-status')])
         rows = []
@@ -693,6 +828,7 @@ def register_callbacks(app):
                 html.Td(value_cell(s_['dew'], '°C', ph.get('dewpoint')), className='col-wide'),
                 html.Td(value_cell(s_['ah'], 'g/m³', ph.get('absolute_humidity')), className='col-wide'),
                 html.Td(s_['comfort'], className='comfort col-wide') if show_comfort else None,
+                html.Td(value_cell(s_['wood'], '%', ph.get('wood_emc')), className='col-wood') if show_wood else None,
                 html.Td(spark(s_['id'], color), className='col-wide'),
                 html.Td([html.Span(s_['label'], className=f"st st-{s_['status']}"),
                          html.Span(s_['sub'], className='st-sub')], className='col-status'),
@@ -719,11 +855,72 @@ def register_callbacks(app):
                 html.Div(className='meter-stats', children=[
                     html.Span(f"{t['dewpoint']} {fmt(s_['dew'])} °C"),
                     html.Span(f"{fmt(s_['ah'])} g/m³"),
+                    html.Span(f"{t['wood_emc']} {fmt(s_['wood'])} %",
+                              className=cls('wood_emc')) if settings.get('show_wood') else None,
                     html.Span(s_['sub']),
                 ]),
                 spark(s_['id'], colors.get(s_['id']), width=300),
             ]))
         return html.Div(cards, className='meters')
+
+    @app.callback(
+        Output('alarm-modal', 'style'),
+        [Input('status-summary', 'n_clicks'),
+         Input('close-alarm-modal', 'n_clicks')],
+        prevent_initial_call=True
+    )
+    def toggle_alarm_modal(open_clicks, close_clicks):
+        return {} if callback_context.triggered_id == 'status-summary' else {'display': 'none'}
+
+    def alarm_list(t, logged_in):
+        """Actieve alarmen en waarschuwingen met dempknoppen (dempen alleen ingelogd)."""
+        when = lambda ts: datetime.fromtimestamp(ts).strftime('%d-%m %H:%M')   # noqa: E731
+        items = []
+        for a in alerts.active_alarms():
+            what = f"{t['zone']} {a['zone']}" if a['zone'] else t[METRIC_KEYS.get(a['metric'], a['metric'])]
+            status = 'alarm' if a['phase'] == 'alarm' and a['level'] == 'alarm' else 'warn'
+            details = [t['alarm_since'].format(time=when(a['since']))] if a['since'] else []
+            if a['muted_until']:
+                details.append(t['muted_until'].format(time=when(a['muted_until'])))
+            buttons = [html.Button(t[f'btn_mute_{minutes}'], n_clicks=0, className='btn btn-small',
+                                   id={'type': 'mute', 'device': a['device_id'], 'metric': a['metric'], 'minutes': minutes})
+                       for minutes in (15, 60, 480, 1440)]
+            if a['muted_until']:
+                buttons.append(html.Button(t['btn_unmute'], n_clicks=0, className='btn btn-small btn-link',
+                                           id={'type': 'mute', 'device': a['device_id'], 'metric': a['metric'], 'minutes': 0}))
+            items.append(html.Li(className='alarm-item' + (' is-muted' if a['muted_until'] else ''), children=[
+                html.Div([html.Span(t['st_' + status], className=f'st st-{status}'), html.Strong(a['device']),
+                          html.Span(what)], className='alarm-what'),
+                html.Div(' · '.join(details), className='alarm-when'),
+                html.Div([html.Span(t['lbl_mute'], className='cfg-label'), *buttons], className='alarm-actions')
+                if logged_in else None,
+            ]))
+        if not items:
+            return html.Div(t['alarms_none'], className='hint')
+        return [None if logged_in else html.Div(t['mute_login'], className='hint'),
+                html.Ul(items, className='alarm-items')]
+
+    @app.callback(
+        Output('alarm-list', 'children'),
+        [Input('graph-update', 'n_intervals'),
+         Input({'type': 'mute', 'device': ALL, 'metric': ALL, 'minutes': ALL}, 'n_clicks')],
+        [State('selected-language', 'data'),
+         State('alarm-modal', 'style')],
+        prevent_initial_call=True
+    )
+    def update_alarm_list(n, mute_clicks, lang, modal_style):
+        """Lijst verversen zolang het venster open is; dempknop: dempen of opheffen (alleen ingelogd)."""
+        if (modal_style or {}).get('display') == 'none':
+            return no_update
+        t = TRANSLATIONS.get(lang) or TRANSLATIONS['en']
+        trigger = callback_context.triggered_id
+        logged_in = auth.is_logged_in()
+        if isinstance(trigger, dict) and callback_context.triggered[0].get('value') and logged_in:
+            if trigger['minutes']:
+                alerts.mute(trigger['device'], trigger['metric'], trigger['minutes'] * 60)
+            else:
+                alerts.unmute(trigger['device'], trigger['metric'])
+        return alarm_list(t, logged_in)
 
     @app.callback(
         [Output('device-overview', 'children'),
@@ -766,7 +963,12 @@ def register_callbacks(app):
          Output('custom-start-date', 'placeholder'),
          Output('custom-end-date', 'placeholder'),
          Output('custom-start-hour', 'placeholder'),
-         Output('custom-end-hour', 'placeholder')] +
+         Output('custom-end-hour', 'placeholder'),
+         Output('draw-zone-btn', 'children'),
+         Output('draw-zone-hint', 'children'),
+         Output('draw-zone-name', 'placeholder'),
+         Output('save-zone-btn', 'children'),
+         Output('cancel-zone-btn', 'children')] +
         [Output(f'preset-{key}', 'children') for key in PRESET_BUTTONS],
         Input('selected-language', 'data')
     )
@@ -775,4 +977,5 @@ def register_callbacks(app):
         t = TRANSLATIONS.get(lang) or TRANSLATIONS['en']
         return [t['btn_select_range'], t['modal_title'], t['quick_select'], t['specific_period'], t['start_datetime'],
                 t['end_datetime'], t['btn_apply'], t['select_date'], t['select_date'], t['hour_placeholder'],
-                t['hour_placeholder']] + [t[f'btn_{key}'] for key in PRESET_BUTTONS]
+                t['hour_placeholder'], t['btn_draw_zone'], t['hint_draw_zone'], t['lbl_zone_name'], t['btn_save_zone'],
+                t['btn_cancel']] + [t[f'btn_{key}'] for key in PRESET_BUTTONS]

@@ -8,7 +8,6 @@ import secrets
 import threading
 import time
 from html import escape
-from urllib.parse import urlsplit
 
 from flask import Response, has_request_context, redirect, request, session
 from itsdangerous import BadSignature, URLSafeTimedSerializer

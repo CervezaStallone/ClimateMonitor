@@ -3,6 +3,7 @@
 Een bus = één seriële interface (bijv. USB RS-485 dongle) met één of meer slaves.
 Bij de eerste start wordt de oude .env configuratie (MODBUS_*) bus 1 met device 1.
 """
+import glob
 import os
 import sqlite3
 import threading
@@ -38,6 +39,13 @@ DEVICE_FIELDS = {
     'register_humidity': {'type': int, 'default': 2, 'env': 'MODBUS_REGISTER_HUMIDITY', 'min': 0, 'max': 65535},
     'scale_temp': {'type': float, 'default': 0.1, 'min': -1000, 'max': 1000, 'nonzero': True},
     'scale_humidity': {'type': float, 'default': 0.1, 'min': -1000, 'max': 1000, 'nonzero': True},
+    # Kalibratie: opgeteld bij de gemeten waarde (leeg = 0)
+    'offset_temp': {'type': float, 'default': 0.0, 'min': -20, 'max': 20, 'blank_default': True},
+    'offset_humidity': {'type': float, 'default': 0.0, 'min': -30, 'max': 30, 'blank_default': True},
+    # Registerformaat (decodering in modbus_reader.decode); XY-MD02 = int16, ABCD
+    'data_type': {'type': str, 'default': 'int16', 'choices': ['int16', 'uint16', 'int32', 'uint32', 'float32'],
+                  'blank_default': True},
+    'byte_order': {'type': str, 'default': 'ABCD', 'choices': ['ABCD', 'DCBA', 'BADC', 'CDAB'], 'blank_default': True},
     'enabled': {'type': bool, 'default': True},
 }
 
@@ -62,7 +70,16 @@ def _connect():
         id INTEGER PRIMARY KEY AUTOINCREMENT, bus_id INTEGER NOT NULL REFERENCES buses(id), name TEXT NOT NULL UNIQUE,
         slave_id INTEGER NOT NULL, function_code INTEGER NOT NULL, register_temp INTEGER NOT NULL,
         register_humidity INTEGER NOT NULL, scale_temp REAL NOT NULL, scale_humidity REAL NOT NULL,
+        offset_temp REAL NOT NULL DEFAULT 0, offset_humidity REAL NOT NULL DEFAULT 0,
+        data_type TEXT NOT NULL DEFAULT 'int16', byte_order TEXT NOT NULL DEFAULT 'ABCD',
         enabled INTEGER NOT NULL, UNIQUE (bus_id, slave_id))''')
+    columns = [row[1] for row in conn.execute('PRAGMA table_info(devices)')]
+    # Tabellen van vóór de kalibratie en het registerformaat: kolommen met de oude vaste waarden erbij
+    for column, definition in (('offset_temp', 'REAL NOT NULL DEFAULT 0'), ('offset_humidity', 'REAL NOT NULL DEFAULT 0'),
+                               ('data_type', "TEXT NOT NULL DEFAULT 'int16'"),
+                               ('byte_order', "TEXT NOT NULL DEFAULT 'ABCD'")):
+        if column not in columns:
+            conn.execute(f'ALTER TABLE devices ADD COLUMN {column} {definition}')
     return conn
 
 
@@ -110,7 +127,7 @@ def _clean_rows(rows, fields):
         item, row_errors = {'id': row.get('id')}, {}
         for field, spec in fields.items():
             raw = row.get(field)
-            if raw is None and spec['type'] is bool:
+            if (raw is None and spec['type'] is bool) or (spec.get('blank_default') and str(raw or '').strip() == ''):
                 raw = spec['default']
             try:
                 value = _coerce(spec, raw)
@@ -303,6 +320,9 @@ def available_ports():
     """Seriële poorten op dit apparaat, als suggestie in de Settings tab."""
     try:
         from serial.tools import list_ports
-        return sorted(p.device for p in list_ports.comports())
+        # hwid 'n/a' = lege seriële poort zonder hardware (/dev/ttyS0-31 op een pc): geen suggestie waard
+        ports = sorted(p.device for p in list_ports.comports() if p.hwid != 'n/a')
     except Exception:
-        return []
+        ports = []
+    # Linux: vaste namen per adapter (serienummer) eerst; ttyUSB0/1 kunnen na een herstart wisselen
+    return sorted(glob.glob('/dev/serial/by-id/*')) + ports

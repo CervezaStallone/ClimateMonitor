@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Climate Monitor">
+  <defs>
+    <linearGradient id="cm-logo" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#F28C1E"/>
+      <stop offset="1" stop-color="#FFC947"/>
+    </linearGradient>
+  </defs>
+  <path d="M32 5 L55 18.5 V45.5 L32 59 L9 45.5 V18.5 Z" fill="none" stroke="url(#cm-logo)" stroke-width="6.5"
+        stroke-linejoin="round"/>
+  <path d="M32 17 L46 27 V40 L32 50 L18 40 V27 Z" fill="url(#cm-logo)" stroke="url(#cm-logo)" stroke-width="2"
+        stroke-linejoin="round"/>
+  <g fill="#fff">
+    <rect x="26.6" y="29" width="4.8" height="4.8" rx="0.8"/>
+    <rect x="32.6" y="29" width="4.8" height="4.8" rx="0.8"/>
+    <rect x="26.6" y="35" width="4.8" height="4.8" rx="0.8"/>
+    <rect x="32.6" y="35" width="4.8" height="4.8" rx="0.8"/>
+  </g>
+</svg>
