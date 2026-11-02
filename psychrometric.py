@@ -314,3 +314,22 @@ def add_device_points(fig, points):
             hovertemplate=f'{name}<br>T: {temp:.1f}°C<br>RH: {rh:.0f}%<br>ω: {w_g_kg:.1f} g/kg<extra></extra>'
         ))
     return fig
+
+
+def add_zones(fig, zone_list):
+    """Zones (veelhoek in temperatuur × RV) in het Mollier diagram; randen volgen de RV-lijnen."""
+    import zones
+    for zone in zone_list:
+        temps, ratios = [], []
+        points = zone['points']
+        for (t1, h1), (t2, h2) in zip(points, points[1:] + points[:1]):
+            for f in np.linspace(0, 1, 16, endpoint=False):
+                temp, rh = t1 + (t2 - t1) * f, h1 + (h2 - h1) * f
+                pw = 611.2 * np.exp(17.62 * temp / (243.12 + temp)) * rh / 100
+                temps.append(temp)
+                ratios.append(0.622 * pw / (101325 - pw) * 1000)
+        color = zones.COLORS[zone['color']]
+        fig.add_trace(go.Scatter(x=temps + temps[:1], y=ratios + ratios[:1], mode='lines', fill='toself',
+                                 name=zone['name'], fillcolor=zones.fill_color(zone['color']),
+                                 line=dict(color=color, width=1.5), hoverinfo='skip'))
+    return fig

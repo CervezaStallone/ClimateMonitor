@@ -95,18 +95,24 @@ def _rgba(hex_color, alpha):
     return f'rgba({r}, {g}, {b}, {alpha})'
 
 
-def figure(points, zones, t, k):
-    """Diagram temperatuur × RV met lijnen van gelijk houtvocht, zones uit de alarmregels en de sensoren.
+def figure(points, limits, t, k, areas=()):
+    """Diagram temperatuur × RV met lijnen van gelijk houtvocht, houtvochtgrenzen, zones en de sensoren.
 
-    points: [(naam, temperatuur, rv, kleur)]; zones: [(min, max, niveau)] in % houtvocht;
-    k: themakleuren (callbacks.THEMES).
+    points: [(naam, temperatuur, rv, kleur)]; limits: [(min, max, niveau)] in % houtvocht uit de alarmregels;
+    areas: zones (zones.py, veelhoek in temperatuur × RV); k: themakleuren (callbacks.THEMES).
     """
+    import zones
     seen = [p[1] for p in points if p[1] is not None]
     temps = np.linspace(min([-5] + [x - 3 for x in seen]), max([45] + [x + 3 for x in seen]), 60)
     fig = go.Figure()
+    for zone in areas:
+        corners = zone['points'] + zone['points'][:1]
+        fig.add_trace(go.Scatter(x=[p[0] for p in corners], y=[p[1] for p in corners], mode='lines', fill='toself',
+                                 name=zone['name'], fillcolor=zones.fill_color(zone['color']),
+                                 line=dict(color=zones.COLORS[zone['color']], width=1.5), hoverinfo='skip'))
     for level in ('warning', 'alarm'):   # alarm als laatste: ligt over de waarschuwing
         color = k['warn'] if level == 'warning' else k['alarm']
-        for low, high, zone_level in zones:
+        for low, high, zone_level in limits:
             if zone_level != level:
                 continue
             for limit, edge, sign in ((high, 100, '≥'), (low, 0, '≤')):

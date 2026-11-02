@@ -21,6 +21,7 @@ from email.message import EmailMessage
 import requests
 
 import devices
+import zones
 import settings
 from settings import DB_FILE
 from translations import TRANSLATIONS
@@ -183,6 +184,10 @@ def evaluate(device, values, now=None):
         for (metric, level), rule in effective_rules(device['id']).items():
             if metric in values:
                 _evaluate_metric(device, metric, level, values[metric], rule, delay, now)
+        if 'temperature' in values and 'humidity' in values:
+            for zone in zones.effective(device['id']):
+                if zone['mode'] != 'none':
+                    _evaluate_zone(device, zone, values['temperature'], values['humidity'], delay, now)
     except Exception as e:
         print(f"Alarm evaluatie fout ({device.get('name')}): {e}")
 
@@ -217,6 +222,37 @@ def _evaluate_metric(device, metric, level, value, rule, delay, now):
         _notify(prefix + breach[0], device, metric, value, breach[1])
 
 
+def _evaluate_zone(device, zone, temperature, humidity, delay, now):
+    """Zone-alarm: gewenste zone verlaten ('keep_inside') of gevarenzone binnengaan ('keep_outside')."""
+    key = (device['id'], f"zone:{zone['id']}", zone['level'])
+    inside = zones.contains(zone, temperature, humidity)
+    breach = inside if zone['mode'] == 'keep_outside' else not inside
+    state = _state.setdefault(key, {'phase': 'normal'})
+    if state['phase'] == 'alarm':
+        # Herstel pas met de hysterese (temperatuur en RV) als marge tot de rand: geen klapperen op de grens
+        safe = zones.clearly(zone, temperature, humidity, settings.get('alert_hysteresis_temp'),
+                             settings.get('alert_hysteresis_humidity'), inside=zone['mode'] == 'keep_inside')
+        if safe:
+            _state[key] = {'phase': 'normal'}
+            if settings.get('alert_notify_recovery'):
+                _notify_zone('alert_zone_recovered', device, zone, temperature, humidity)
+        return
+    if not breach:
+        _state[key] = {'phase': 'normal'}
+        return
+    if state['phase'] != 'pending':
+        _state[key] = state = {'phase': 'pending', 'since': now}
+    if now - state['since'] >= delay:
+        _state[key] = {'phase': 'alarm'}
+        _notify_zone('alert_zone_entered' if inside else 'alert_zone_left', device, zone, temperature, humidity)
+
+
+def _notify_zone(template, device, zone, temperature, humidity):
+    send(_t()[template].format(icon='🟡' if zone['level'] == 'warning' else '⚠️', device=device['name'],
+                               zone=zone['name'], temperature=f'{temperature:.1f}', humidity=f'{humidity:.0f}',
+                               time=_now_text()))
+
+
 def _notify(template, device, metric, value, limit):
     t = _t()
     name_key, unit, _ = METRICS[metric]
@@ -239,6 +275,7 @@ def device_status(device_id):
     """
     phases = {}
     for (dev, metric, level), state in list(_state.items()):
+        metric = 'zone' if metric.startswith('zone:') else metric   # alle zones samen als één grootheid
         if dev == device_id and state['phase'] != 'normal' and phases.get(metric) != 'alarm':
             phases[metric] = 'alarm' if state['phase'] == 'alarm' and level == 'alarm' else 'pending'
     if 'alarm' in phases.values():

@@ -47,6 +47,8 @@ def fresh_settings():
     alerts._state.clear()
     alerts._offline.clear()
     alerts._first_seen.clear()
+    import zones
+    zones._cache = None
     while not alerts._outbox.empty():
         alerts._outbox.get_nowait()
 
@@ -549,6 +551,112 @@ def test_sensor_form_has_data_type_and_byte_order():
     assert fields['data_type'].value == 'int16' and fields['byte_order'].value == 'ABCD'
     assert [o['value'] for o in fields['data_type'].options] == devices.DEVICE_FIELDS['data_type']['choices']
     assert [o['value'] for o in fields['byte_order'].options] == devices.DEVICE_FIELDS['byte_order']['choices']
+
+
+def test_zones_rectangle_and_free_shape():
+    """Zone = veelhoek in temperatuur × RV; rechthoek uit min/max of vrij getekend."""
+    import zones
+    names = setup_alerts([])
+    kas = names['Kas']['id']
+    rect = {'scope': 0, 'name': 'Comfort', 'color': 'green', 'mode': 'keep_inside', 'level': 'warning',
+            'temp_min': 18, 'temp_max': 24, 'rh_min': 40, 'rh_max': 60, 'enabled': 'true'}
+    free = {'scope': kas, 'name': 'Schimmel', 'color': 'red', 'mode': 'keep_outside', 'level': 'alarm',
+            'shape': 'polygon', 'points': '[[10, 80], [30, 80], [30, 100], [10, 100]]', 'enabled': 'true'}
+    assert zones.validate([{**rect, 'temp_min': 30}])[1] == {0: {'temp_max': 'err_min_max'}}
+    assert zones.validate([{**rect, 'color': 'pink'}])[1] == {0: {'color': 'err_choice'}}
+    assert zones.save([rect, free]) == {}
+    comfort, mold = zones.load()
+    assert comfort['points'] == [[18.0, 40.0], [24.0, 40.0], [24.0, 60.0], [18.0, 60.0]]
+    assert zones.contains(comfort, 20, 50) and not zones.contains(comfort, 20, 70)
+    assert zones.contains(mold, 20, 90) and not zones.contains(mold, 20, 60)
+    assert [z['name'] for z in zones.effective(kas)] == ['Comfort', 'Schimmel']
+    assert [z['name'] for z in zones.effective(names['Koelcel']['id'])] == ['Comfort']
+
+
+def test_zone_alarms_on_leaving_and_entering():
+    import zones
+    names = setup_alerts([])
+    assert settings.save({'alert_delay_seconds': 0}) == {}
+    assert zones.save([
+        {'scope': 0, 'name': 'Comfort', 'color': 'green', 'mode': 'keep_inside', 'level': 'warning',
+         'temp_min': 18, 'temp_max': 24, 'rh_min': 40, 'rh_max': 60, 'enabled': 'true'},
+        {'scope': 0, 'name': 'Schimmel', 'color': 'red', 'mode': 'keep_outside', 'level': 'alarm',
+         'temp_min': 10, 'temp_max': 30, 'rh_min': 80, 'rh_max': 100, 'enabled': 'true'}]) == {}
+    cel = names['Koelcel']
+    alerts.evaluate(cel, {'temperature': 20.0, 'humidity': 50.0}, now=1)
+    assert outbox_texts() == []
+    alerts.evaluate(cel, {'temperature': 20.0, 'humidity': 85.0}, now=2)
+    texts = outbox_texts()
+    assert len(texts) == 2 and any('buiten zone Comfort' in x for x in texts) and any('in zone Schimmel' in x for x in texts)
+    assert alerts.device_status(cel['id']) == ('alarm', {'zone': 'alarm'})
+    alerts.evaluate(cel, {'temperature': 20.0, 'humidity': 50.0}, now=3)
+    assert len(outbox_texts()) == 2 and alerts.device_status(cel['id'])[0] == 'ok'
+
+
+def test_zones_drawn_in_mollier_and_wood_diagram():
+    import callbacks
+    import zones
+    from dash import Dash
+    setup_alerts([])
+    assert settings.save({'show_wood': ['on']}) == {}
+    assert zones.save([{'scope': 0, 'name': 'Opslag', 'color': 'blue', 'mode': 'none', 'level': 'alarm',
+                        'temp_min': 10, 'temp_max': 20, 'rh_min': 50, 'rh_max': 70, 'enabled': 'true'}]) == {}
+    app = Dash(__name__)
+    callbacks.register_callbacks(app)
+    for output in ('psychrometric-chart.figure', 'wood-chart.figure'):
+        fig = run_callback(app, output, 0, 'nl', 0, *(['dashboard'] if output == 'wood-chart.figure' else []),
+                           trigger='selected-language.data')
+        zone = next(trace for trace in fig.data if trace.name == 'Opslag')
+        assert zone.fill == 'toself' and zone.line.color == zones.COLORS['blue'], output
+
+
+def test_zone_alarm_has_margin_at_the_edge():
+    """Herstel pas als de sensor de hysterese (0.5 °C / 2 % RV) van de rand af is: geen klapperen op de grens."""
+    import zones
+    names = setup_alerts([])
+    assert settings.save({'alert_delay_seconds': 0, 'alert_hysteresis_temp': 0.5, 'alert_hysteresis_humidity': 2}) == {}
+    assert zones.save([
+        {'scope': 0, 'name': 'Comfort', 'color': 'green', 'mode': 'keep_inside', 'level': 'alarm',
+         'temp_min': 18, 'temp_max': 24, 'rh_min': 40, 'rh_max': 60, 'enabled': 'true'},
+        {'scope': 0, 'name': 'Schimmel', 'color': 'red', 'mode': 'keep_outside', 'level': 'alarm',
+         'temp_min': 0, 'temp_max': 40, 'rh_min': 80, 'rh_max': 100, 'enabled': 'true'}]) == {}
+    cel = names['Koelcel']
+    alerts.evaluate(cel, {'temperature': 20.0, 'humidity': 61.0}, now=1)       # Comfort verlaten
+    assert len(outbox_texts()) == 1
+    alerts.evaluate(cel, {'temperature': 20.0, 'humidity': 59.5}, now=2)       # net binnen: nog geen herstel
+    assert outbox_texts() == []
+    alerts.evaluate(cel, {'temperature': 20.0, 'humidity': 57.0}, now=3)       # 3 % binnen de rand: hersteld
+    assert len(outbox_texts()) == 1
+    kas = names['Kas']
+    alerts.evaluate(kas, {'temperature': 20.0, 'humidity': 81.0}, now=5)        # Schimmel binnen (en Comfort uit)
+    outbox_texts()
+    alerts.evaluate(kas, {'temperature': 20.0, 'humidity': 79.0}, now=6)        # net buiten Schimmel: nog alarm
+    assert not any('Schimmel' in x for x in outbox_texts())
+    alerts.evaluate(kas, {'temperature': 20.0, 'humidity': 77.0}, now=7)
+    assert any('Schimmel' in x for x in outbox_texts())
+
+
+def test_board_shows_zone_alarm():
+    import json
+    import callbacks
+    import plotly
+    import zones
+    from dash import Dash
+    names = setup_alerts([])
+    database.init_database()
+    conn = sqlite3.connect(settings.DB_FILE)
+    conn.execute(f'INSERT INTO {database.get_table_name()} (timestamp, temperature, humidity, device_id) VALUES (?, 20, 85, ?)',
+                 (int(time.time()), names['Koelcel']['id']))
+    conn.commit()
+    conn.close()
+    assert settings.save({'alert_delay_seconds': 0}) == {}
+    assert zones.save([{'scope': 0, 'name': 'Schimmel', 'color': 'red', 'mode': 'keep_outside', 'level': 'alarm',
+                        'temp_min': 10, 'temp_max': 30, 'rh_min': 80, 'rh_max': 100, 'enabled': 'true'}]) == {}
+    alerts.evaluate(names['Koelcel'], {'temperature': 20.0, 'humidity': 85.0})
+    app = Dash(__name__)
+    callbacks.register_callbacks(app)
+    board, _ = run_callback(app, 'device-overview.children', 0, 'nl', 'board', 'dashboard', trigger='view-toggle.value')
+    assert 'Alarm · Zone' in json.dumps(board, cls=plotly.utils.PlotlyJSONEncoder, ensure_ascii=False)
 
 
 def test_tab_and_url_stay_in_sync():

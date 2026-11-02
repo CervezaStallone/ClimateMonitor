@@ -10,10 +10,11 @@ import devices
 import layout
 import settings
 import wood
+import zones
 from translations import TRANSLATIONS
 from database import get_all_measurement_tables, build_union_query, DB_FILE
 from modbus_reader import derived_values
-from psychrometric import add_device_points, create_psychrometric_chart, create_psychrometric_chart_historical
+from psychrometric import add_device_points, add_zones, create_psychrometric_chart, create_psychrometric_chart_historical
 
 # Categorisch palet per sensor (vaste volgorde, gevalideerd op kleurenblindheid en contrast).
 # Sensor 9 en verder krijgen een neutrale kleur; status-kleuren worden nooit voor sensoren gebruikt.
@@ -32,7 +33,8 @@ FONT = 'system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, sans-serif'
 METRIC_UNITS = {'temperature': '°C', 'humidity': '%', 'dewpoint': '°C', 'absolute_humidity': 'g/m³', 'comfort': '',
                 'wood_emc': '%'}
 METRIC_KEYS = {'temperature': 'temperature', 'humidity': 'humidity', 'dewpoint': 'dewpoint',
-               'absolute_humidity': 'abs_humidity', 'comfort': 'comfort', 'wood_emc': 'wood_emc'}
+               'absolute_humidity': 'abs_humidity', 'comfort': 'comfort', 'wood_emc': 'wood_emc',
+               'zone': 'zone'}   # zone: alleen als statuslabel (alle zone-alarmen samen)
 
 
 def theme_mode():
@@ -334,7 +336,7 @@ def register_callbacks(app):
         coldest = min((p[1] for p in points if p[1] is not None), default=0)
         if coldest < 0:
             fig.update_xaxes(range=[coldest - 3, 40])  # punten onder 0 °C zichtbaar houden
-        return fig
+        return add_zones(fig, zones.visible(device_sel))   # na theme_mollier: dat kleurt vlakken als comfortzone
     
     @app.callback(
         Output('wood-chart', 'figure'),
@@ -353,7 +355,8 @@ def register_callbacks(app):
         latest = latest_per_device()
         points = [(d['name'], latest[d['id']][1], latest[d['id']][2], colors.get(d['id'])) for d in devices.list_devices()
                   if d['id'] in latest and (not device_sel or d['id'] == device_sel)]
-        fig = style_figure(wood.figure(points, wood_zones(device_sel), t, THEMES[mode]), mode, height=520)
+        fig = wood.figure(points, wood_zones(device_sel), t, THEMES[mode], zones.visible(device_sel))
+        fig = style_figure(fig, mode, height=520)
         fig.update_layout(hovermode='closest', margin=dict(l=60, r=50, t=30, b=50))
         return fig
 

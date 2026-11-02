@@ -125,7 +125,10 @@ HTML_TEMPLATE = '''
             .meters { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
             .meter { background: var(--panel); border: 1px solid var(--line); border-top: 3px solid var(--st); padding: 14px 16px; }
             .meter-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
-            .meter .name { font-weight: 600; display: flex; align-items: center; gap: 8px; }
+            .meter-head > div:first-child { min-width: 0; flex: 1 1 auto; }
+            .meter-head .st { white-space: normal; flex: 0 1 auto; max-width: 58%; align-items: flex-start; line-height: 1.35; }
+            .meter-head .st::before { margin-top: 4px; }
+            .meter .name { font-weight: 600; display: flex; align-items: center; gap: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
             .meter .where { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 2px; }
             .meter-display { background: var(--cell); margin-top: 12px; padding: 12px 14px; display: grid; gap: 6px; }
             .meter-display .v1, .meter-display .v2 { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--digit); line-height: 1.1; }
@@ -133,7 +136,8 @@ HTML_TEMPLATE = '''
             .meter-display .u { font-size: 13px; color: var(--muted); margin-left: 6px; }
             .meter-display .is-alarm { color: var(--alarm); } .meter-display .is-warn { color: var(--warn); }
             .meter-stats .is-alarm { color: var(--alarm); font-weight: 600; } .meter-stats .is-warn { color: var(--warn); font-weight: 600; }
-            .meter-stats { display: flex; justify-content: space-between; gap: 8px; margin-top: 10px; font-family: var(--mono); font-size: 12px; color: var(--muted); }
+            .meter-stats { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 14px; margin-top: 10px; font-family: var(--mono); font-size: 12px; color: var(--muted); }
+            .meter-stats > span { white-space: nowrap; }
             .meter .spark { margin-top: 8px; width: 100%; }
             .empty { padding: 28px; color: var(--muted); }
 
