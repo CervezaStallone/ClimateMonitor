@@ -1,8 +1,9 @@
+import json
 import sqlite3
 import math
 import pandas as pd
 from datetime import datetime, timedelta
-from dash import ALL, callback_context, html, no_update, Input, Output, State
+from dash import ALL, ClientsideFunction, callback_context, html, no_update, Input, Output, State
 import plotly.graph_objects as go
 
 import alerts
@@ -10,6 +11,7 @@ import auth
 import devices
 import layout
 import settings
+import settings_ui
 import wood
 import zones
 from translations import TRANSLATIONS
@@ -31,6 +33,7 @@ THEMES = {
                   hover='#eceee8', ok='#0b8a0b', warn='#c98500', alarm='#d03b3b', offline='#7d838a'),
 }
 FONT = 'system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, sans-serif'
+NEW_ZONE_SQUARE = ((15, 40), (25, 40), (25, 60), (15, 60))   # nieuwe zone begint als vierkant (°C, % RV)
 METRIC_UNITS = {'temperature': '°C', 'humidity': '%', 'dewpoint': '°C', 'absolute_humidity': 'g/m³', 'comfort': '',
                 'wood_emc': '%'}
 METRIC_KEYS = {'temperature': 'temperature', 'humidity': 'humidity', 'dewpoint': 'dewpoint',
@@ -374,27 +377,147 @@ def register_callbacks(app):
             fig.update_xaxes(range=[coldest - 3, 40])  # punten onder 0 °C zichtbaar houden
         return fig
     
-    @app.callback(
-        Output('wood-chart', 'figure'),
-        [Input('graph-update', 'n_intervals'),
-         Input('selected-language', 'data'),
-         Input('device-selector', 'value')],
-        State('main-tabs', 'value')
-    )
-    def update_wood_chart(n, lang, device_sel, tab):
-        """Houtvochtdiagram: actuele punten per sensor en de zones uit de houtvochtregels"""
-        if not settings.get('show_wood') or (callback_context.triggered_id == 'graph-update' and (n % 5 or tab == 'settings')):
-            return no_update
+    def wood_chart(lang, device_sel, editing):
+        """Houtvochtdiagram: actuele punten per sensor, houtvochtgrenzen en zones (zone in bewerking: door de editor)."""
         t = TRANSLATIONS.get(lang) or TRANSLATIONS['en']
         mode = theme_mode()
         colors = device_colors(mode)
         latest = latest_per_device()
         points = [(d['name'], latest[d['id']][1], latest[d['id']][2], colors.get(d['id'])) for d in devices.list_devices()
                   if d['id'] in latest and (not device_sel or d['id'] == device_sel)]
-        fig = wood.figure(points, wood_zones(device_sel), t, THEMES[mode], zones.visible(device_sel))
+        areas = [z for z in zones.visible(device_sel) if not editing or z['id'] != editing.get('id')]
+        fig = wood.figure(points, wood_zones(device_sel), t, THEMES[mode], areas)
         fig = style_figure(fig, mode, height=520)
         fig.update_layout(hovermode='closest', margin=dict(l=60, r=50, t=30, b=50))
         return fig
+
+    @app.callback(
+        Output('wood-chart', 'figure'),
+        [Input('graph-update', 'n_intervals'),
+         Input('selected-language', 'data'),
+         Input('device-selector', 'value')],
+        [State('zone-edit', 'data'),
+         State('main-tabs', 'value')]
+    )
+    def update_wood_chart(n, lang, device_sel, editing, tab):
+        """Live houtvochtdiagram (elke 5 s); tijdens het bewerken van een zone stil."""
+        if not settings.get('show_wood') or editing:
+            return no_update
+        if callback_context.triggered_id == 'graph-update' and (n % 5 or tab == 'settings'):
+            return no_update
+        return wood_chart(lang, device_sel, editing)
+
+    @app.callback(
+        Output('wood-chart', 'figure', allow_duplicate=True),
+        Input('zone-edit', 'data'),
+        [State('selected-language', 'data'),
+         State('device-selector', 'value')],
+        prevent_initial_call=True
+    )
+    def wood_chart_for_editing(editing, lang, device_sel):
+        """Editor open of dicht: diagram zonder (of weer met) de zone in bewerking.
+
+        Een eigen callback: Dash vervangt een lopend verzoek door een nieuwer verzoek van dezelfde callback, dus
+        via update_wood_chart zou de ververs-tik van elke seconde dit diagram telkens overschrijven.
+        """
+        if not settings.get('show_wood'):
+            return no_update
+        return wood_chart(lang, device_sel, editing)
+
+    @app.callback(
+        [Output('zone-edit', 'data'),
+         Output('zone-edit-bar', 'style'),
+         Output('zone-edit-name', 'value'),
+         Output('zone-edit-scope', 'value'),
+         Output('zone-edit-mode', 'value'),
+         Output('zone-edit-level', 'value'),
+         Output('zone-edit-color', 'value'),
+         Output('zone-edit-scope', 'options'),
+         Output('zone-edit-points', 'data')],
+        [Input('zone-add-btn', 'n_clicks'),
+         Input('zone-edit-select', 'value')],
+        [State('device-selector', 'value'),
+         State('selected-language', 'data')],
+        prevent_initial_call=True
+    )
+    def start_zone_edit(add_clicks, zone_id, device_sel, lang):
+        """Nieuwe zone (vierkant) of een bestaande zone openen in de editor."""
+        t = TRANSLATIONS.get(lang) or TRANSLATIONS['en']
+        if callback_context.triggered_id == 'zone-add-btn':
+            zone = {'id': None, 'points': [list(p) for p in NEW_ZONE_SQUARE],
+                    'name': f"{t['zone']} {len(zones.load()) + 1}", 'device_id': device_sel or None,
+                    'mode': 'keep_outside', 'level': 'warning', 'color': 'red'}
+        else:
+            zone = next((z for z in zones.load() if z['id'] == zone_id), None)
+            if zone is None:
+                return (no_update,) * 9
+        return ({'id': zone['id'], 'points': zone['points']}, {}, zone['name'], zone['device_id'] or 0, zone['mode'],
+                zone['level'], zone['color'], layout.scope_options(t), None)
+
+    @app.callback(
+        [Output('zone-edit-msg', 'children'),
+         Output('zone-edit', 'data', allow_duplicate=True),
+         Output('zone-edit-bar', 'style', allow_duplicate=True),
+         Output('zone-edit-select', 'value'),
+         Output('zone-edit-select', 'options')],
+        [Input('zone-save-btn', 'n_clicks'),
+         Input('zone-delete-btn', 'n_clicks'),
+         Input('zone-cancel-btn', 'n_clicks')],
+        [State('zone-edit', 'data'),
+         State('zone-edit-points', 'data'),
+         State('zone-edit-name', 'value'),
+         State('zone-edit-scope', 'value'),
+         State('zone-edit-mode', 'value'),
+         State('zone-edit-level', 'value'),
+         State('zone-edit-color', 'value'),
+         State('selected-language', 'data')],
+        prevent_initial_call=True
+    )
+    def finish_zone_edit(save_clicks, delete_clicks, cancel_clicks, editing, points, name, scope, mode, level, color,
+                         lang):
+        """Opslaan, verwijderen of annuleren (opslaan en verwijderen alleen ingelogd: het dashboard kan publiek zijn)."""
+        t = TRANSLATIONS.get(lang) or TRANSLATIONS['en']
+        closed = ({'display': 'none'}, None)
+        trigger = callback_context.triggered_id
+        if trigger == 'zone-cancel-btn' or not editing:
+            return '', None, *closed, no_update
+        if not auth.is_logged_in():
+            return t['draw_login'], no_update, no_update, no_update, no_update
+        rows = settings_ui.table_rows('zones')
+        if trigger == 'zone-delete-btn':
+            rows = [r for r in rows if r['id'] != editing['id']]
+            message = t['zone_deleted']
+        else:
+            existing = next((r for r in rows if editing['id'] and r['id'] == editing['id']), None)
+            row = {'id': editing['id'], 'scope': scope or 0, 'name': (name or '').strip() or t['zone'], 'color': color,
+                   'mode': mode, 'level': level, 'shape': 'polygon', 'points': json.dumps(points or editing['points']),
+                   'enabled': existing['enabled'] if existing else 'true'}
+            rows = [row if r is existing else r for r in rows] if existing else rows + [row]
+            message = t['draw_saved']
+        if zones.save(rows):
+            return t['msg_save_failed'], no_update, no_update, no_update, no_update
+        return message, None, *closed, layout.zone_options()
+
+    @app.callback(
+        Output('zone-edit-select', 'value', allow_duplicate=True),
+        Input('wood-chart', 'clickData'),
+        State('wood-chart', 'figure'),
+        prevent_initial_call=True
+    )
+    def open_clicked_zone(click, figure):
+        """Klik op een zone in het houtdiagram opent die zone in de editor (zone-id staat in trace.meta)."""
+        try:
+            trace = figure['data'][click['points'][0]['curveNumber']]
+        except (TypeError, KeyError, IndexError):
+            return no_update
+        return trace.get('meta') if trace.get('hoveron') == 'fills' and trace.get('meta') else no_update
+
+    # De editor zelf draait in de browser (assets/zone_editor.js): sleepbare hoeken en middenbollen
+    app.clientside_callback(
+        ClientsideFunction(namespace='zones', function_name='edit'),
+        Output('zone-editor-ready', 'data'),
+        Input('zone-edit', 'data')
+    )
 
     # Callback voor modal open/close
     @app.callback(
@@ -913,7 +1036,17 @@ def register_callbacks(app):
          Output('custom-start-date', 'placeholder'),
          Output('custom-end-date', 'placeholder'),
          Output('custom-start-hour', 'placeholder'),
-         Output('custom-end-hour', 'placeholder')] +
+         Output('custom-end-hour', 'placeholder'),
+         Output('zone-add-btn', 'children'),
+         Output('zone-edit-select', 'placeholder'),
+         Output('zone-edit-hint', 'children'),
+         Output('zone-edit-name', 'placeholder'),
+         Output('zone-edit-mode', 'options'),
+         Output('zone-edit-level', 'options'),
+         Output('zone-edit-color', 'options'),
+         Output('zone-save-btn', 'children'),
+         Output('zone-delete-btn', 'children'),
+         Output('zone-cancel-btn', 'children')] +
         [Output(f'preset-{key}', 'children') for key in PRESET_BUTTONS],
         Input('selected-language', 'data')
     )
@@ -922,4 +1055,6 @@ def register_callbacks(app):
         t = TRANSLATIONS.get(lang) or TRANSLATIONS['en']
         return [t['btn_select_range'], t['modal_title'], t['quick_select'], t['specific_period'], t['start_datetime'],
                 t['end_datetime'], t['btn_apply'], t['select_date'], t['select_date'], t['hour_placeholder'],
-                t['hour_placeholder']] + [t[f'btn_{key}'] for key in PRESET_BUTTONS]
+                t['hour_placeholder'], t['btn_new_zone'], t['lbl_edit_zone'], t['hint_edit_zone'], t['lbl_zone_name'],
+                layout.zone_mode_options(t), layout.level_options(t), layout.zone_color_options(t), t['btn_save_zone'],
+                t['btn_delete_zone'], t['btn_cancel']] + [t[f'btn_{key}'] for key in PRESET_BUTTONS]

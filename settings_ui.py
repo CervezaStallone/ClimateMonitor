@@ -26,8 +26,7 @@ DEVICE_COLUMNS = ['name', 'bus', 'slave_id', 'function_code', 'register_temp', '
 BYTE_ORDER_LABELS = {'ABCD': 'ABCD · big endian', 'DCBA': 'DCBA · little endian', 'BADC': 'BADC · byte swap',
                      'CDAB': 'CDAB · word swap'}
 RULE_COLUMNS = ['scope', 'metric', 'level', 'min_value', 'max_value', 'enabled']
-ZONE_COLUMNS = ['name', 'scope', 'mode', 'level', 'color', 'temp_min', 'temp_max', 'rh_min', 'rh_max', 'enabled']
-RECT_FIELDS = ['temp_min', 'temp_max', 'rh_min', 'rh_max']
+ZONE_COLUMNS = ['name', 'scope', 'mode', 'level', 'color', 'enabled']   # vorm: in het houtdiagram (zone-editor)
 TABLE_COLUMNS = {'buses': BUS_COLUMNS, 'devices': DEVICE_COLUMNS, 'rules': RULE_COLUMNS, 'zones': ZONE_COLUMNS}
 HIDDEN_FIELDS = {'zones': ['shape', 'points']}   # meegestuurd zonder zichtbaar veld (getekende vorm)
 WIDE_FIELDS = {'name', 'port', 'bus', 'scope', 'metric', 'byte_order', 'mode'}   # twee kolommen breed
@@ -83,8 +82,8 @@ def table_rows(table):
     """Opgeslagen bussen, sensoren, grenswaarden of zones als formulierregels (aan/uit als 'true'/'false')."""
     if table == 'zones':
         return [{'id': z['id'], 'scope': z['device_id'] or 0, 'name': z['name'], 'mode': z['mode'], 'level': z['level'],
-                 'color': z['color'], 'shape': z['shape'], 'points': json.dumps(z['points']),
-                 **{f: z[f] for f in RECT_FIELDS}, 'enabled': 'true' if z['enabled'] else 'false'} for z in zones.load()]
+                 'color': z['color'], 'shape': 'polygon', 'points': json.dumps(z['points']),
+                 'enabled': 'true' if z['enabled'] else 'false'} for z in zones.load()]
     if table == 'rules':
         return [{'id': None, 'scope': r['device_id'] or 0, 'metric': r['metric'], 'level': r['level'],
                  'min_value': r['min_value'], 'max_value': r['max_value'], 'enabled': 'true' if r['enabled'] else 'false'}
@@ -162,12 +161,10 @@ def row_form(table, rows, t, bus_names=None):
                            value=row.get(field)) for field in ['id'] + HIDDEN_FIELDS.get(table, [])]
         for field in TABLE_COLUMNS[table]:
             cell_id = {'type': 'cfg-cell', 'table': table, 'row': index, 'field': field}
-            if row.get('shape') == 'polygon' and field in RECT_FIELDS:
-                if field == RECT_FIELDS[0]:   # getekende vorm: één vak in plaats van vier min/max-velden
-                    cells.append(html.Div(id=cell_id, className='cfg-cell wide', children=[
-                        html.Span(t['col_shape'], className='cfg-label'),
-                        html.Span(t['zone_free_shape'], className='cfg-static')]))
-                continue
+            if table == 'zones' and field == 'enabled':   # vorm: alleen in het houtdiagram aan te passen
+                cells.append(html.Div(className='cfg-cell wide', children=[
+                    html.Span(t['col_shape'], className='cfg-label'),
+                    html.Span(t['zone_shape_in_diagram'], className='cfg-static')]))
             control = _control(table, index, field, row.get(field), t, bus_names)
             # Label om het veld heen (koppeling zonder id); het vinkje heeft al een eigen label
             wrapper = html.Div if field == 'enabled' else html.Label
@@ -202,10 +199,6 @@ def _new_row(table, rows, bus_names):
                 'slave_id': next(i for i in range(1, 248) if i not in used), 'function_code': 4, 'register_temp': 1,
                 'register_humidity': 2, 'data_type': 'int16', 'byte_order': 'ABCD', 'scale_temp': 0.1,
                 'scale_humidity': 0.1, 'offset_temp': 0, 'offset_humidity': 0, 'enabled': 'true'}
-    if table == 'zones':
-        return {'id': None, 'scope': 0, 'name': f'Zone {len(rows) + 1}', 'mode': 'keep_inside', 'level': 'warning',
-                'color': 'green', 'shape': 'rect', 'points': None, 'temp_min': 18, 'temp_max': 24, 'rh_min': 40,
-                'rh_max': 60, 'enabled': 'true'}
     return {'id': None, 'scope': 0, 'metric': 'temperature', 'level': 'alarm', 'min_value': None, 'max_value': None,
             'enabled': 'true'}
 
@@ -279,7 +272,6 @@ def _alerts_section(t):
         html.H4(t['table_zones']),
         html.Div(t['hint_zones'], className='field-hint'),
         html.Div(id='zones-form', className='cfg-list', children=row_form('zones', table_rows('zones'), t)),
-        html.Button(t['btn_add_zone'], id='add-zone', n_clicks=0, className='btn btn-small'),
         html.Div(id='zone-errors', className='field-error'),
         html.H4(t['lbl_alert_log']),
         html.Div(id='alert-log', children=alert_log_list(t)),
@@ -549,13 +541,13 @@ def register_settings_callbacks(app):
 
     @app.callback(
         Output('zones-form', 'children'),
-        [Input('add-zone', 'n_clicks'),
-         Input({'type': 'cfg-remove', 'table': 'zones', 'row': ALL}, 'n_clicks')],
+        Input({'type': 'cfg-remove', 'table': 'zones', 'row': ALL}, 'n_clicks'),
         [State(_fields('zones'), 'value'),
          State('selected-language', 'data')],
         prevent_initial_call=True
     )
-    def edit_zones(n_clicks, remove_clicks, values, lang):
+    def edit_zones(remove_clicks, values, lang):
+        """Zone verwijderen uit de lijst (nieuwe zones en de vorm: in het houtdiagram)."""
         if not auth.is_logged_in():
             return no_update
         return edit_rows('zones', _t(lang), bus_names=[])
