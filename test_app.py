@@ -572,7 +572,7 @@ def test_settings_callbacks_require_login():
         assert callbacks['change_password'](1, 'x', 'y', 'y', 'nl')[0] == TRANSLATIONS_NL['settings_locked']
         assert 'admin' not in str(callbacks['show_settings']('settings', 'nl'))   # alleen het inlogscherm
         assert callbacks['edit_rules'](1, [], [], 'nl') is dash.no_update
-        assert callbacks['edit_zones'](1, [], [], 'nl') is dash.no_update
+        assert callbacks['edit_zones']([], [], 'nl') is dash.no_update
         assert callbacks['send_test'](1, 0, [], 'nl') == TRANSLATIONS_NL['settings_locked']
         assert callbacks['refresh_alert_log'](5, 'settings', 'nl') is dash.no_update
         assert callbacks['test_mqtt'](1, [], 'nl') == TRANSLATIONS_NL['settings_locked']
@@ -610,7 +610,7 @@ def test_config_forms_round_trip():
 
 
 def test_zone_form_round_trip():
-    """Zones in Settings: rechthoek via min/max-velden, getekende vorm blijft behouden (geen min/max-velden)."""
+    """Zones in Settings: eigenschappen bewerken, de vorm (in het houtdiagram gemaakt) blijft behouden."""
     import settings_ui
     import zones
     from dash import html
@@ -622,8 +622,13 @@ def test_zone_form_round_trip():
          'points': '[[10, 80], [30, 85], [20, 95]]', 'enabled': 'true'}]) == {}
     form = html.Div(settings_ui.row_form('zones', settings_ui.table_rows('zones'), TRANSLATIONS['nl']))
     fields = [c for c in components(form) if isinstance(getattr(c, 'id', None), dict) and c.id.get('type') == 'cfg']
-    assert not any(c.id['row'] == 1 and c.id['field'] == 'temp_min' for c in fields)
-    assert TRANSLATIONS_NL['zone_free_shape'] in str(form)
+    assert not any(c.id['field'] in ('temp_min', 'temp_max', 'rh_min', 'rh_max') for c in fields)
+    assert str(form).count(TRANSLATIONS_NL['zone_shape_in_diagram']) == 2
+    original, auth.is_logged_in = auth.is_logged_in, lambda: True
+    try:
+        assert 'add-zone' not in str(settings_ui.render_settings('nl'))       # nieuwe zone: in het houtdiagram
+    finally:
+        auth.is_logged_in = original
     rows = settings_ui.collect([{'id': c.id, 'value': c.value} for c in fields])
     assert zones.save(rows) == {}
     assert [z['points'] for z in zones.load()] == [[[18.0, 40.0], [24.0, 40.0], [24.0, 60.0], [18.0, 60.0]],
@@ -682,8 +687,10 @@ def test_zone_alarms_on_leaving_and_entering():
     assert len(outbox_texts()) == 2 and alerts.device_status(cel['id'])[0] == 'ok'
 
 
-def test_zones_drawn_in_mollier_and_wood_diagram():
+def test_zones_only_in_wood_diagram():
+    """Zones horen bij het houtdiagram (temperatuur × RV); het Mollier-diagram toont alleen de vaste comfortzone."""
     import callbacks
+    import layout
     import zones
     from dash import Dash
     setup_alerts([])
@@ -692,11 +699,112 @@ def test_zones_drawn_in_mollier_and_wood_diagram():
                         'temp_min': 10, 'temp_max': 20, 'rh_min': 50, 'rh_max': 70, 'enabled': 'true'}]) == {}
     app = Dash(__name__)
     callbacks.register_callbacks(app)
-    for output in ('psychrometric-chart.figure', 'wood-chart.figure'):
-        fig = run_callback(app, output, 0, 'nl', 0, *(['dashboard'] if output == 'wood-chart.figure' else [False]),
-                           trigger='selected-language.data')
-        zone = next(trace for trace in fig.data if trace.name == 'Opslag')
-        assert zone.fill == 'toself' and zone.line.color == zones.COLORS['blue'], output
+    mollier = run_callback(app, 'psychrometric-chart.figure', 0, 'nl', 0, trigger='selected-language.data')
+    assert 'Opslag' not in [trace.name for trace in mollier.data]
+    assert 'draw-zone-btn' not in str(layout.create_layout())
+    wood = run_callback(app, 'wood-chart.figure', 0, 'nl', 0, None, 'dashboard', trigger='selected-language.data')
+    zone = next(trace for trace in wood.data if trace.name == 'Opslag')
+    assert zone.fill == 'toself' and zone.line.color == zones.COLORS['blue']
+
+
+def test_zone_editor_add_save_edit_delete():
+    """Zone-editor in het houtdiagram: nieuw = vierkant, hoeken/middenbollen slepen (JS), opslaan alleen ingelogd."""
+    import callbacks
+    import layout
+    import zones
+    from dash import Dash
+    setup_alerts([])
+    assert settings.save({'show_wood': ['on']}) == {}
+    rendered = str(layout.create_layout())
+    for component_id in ('zone-add-btn', 'zone-edit-select', 'zone-edit-bar', 'zone-edit-points'):
+        assert component_id in rendered, component_id
+    app = Dash(__name__)
+    callbacks.register_callbacks(app)
+    start = '..zone-edit.data...zone-edit-bar.style'
+    edit, bar, *_ = run_callback(app, start, 1, None, 0, 'nl', trigger='zone-add-btn.n_clicks')
+    assert edit['id'] is None and len(edit['points']) == 4 and bar == {}            # begint als vierkant
+    shape = edit['points'][:2] + [[22.0, 70.0]] + edit['points'][2:]                 # middenbol versleept: vijfhoek
+    finish = 'zone-edit-msg.children'
+    fields = ('Nat', 0, 'keep_outside', 'alarm', 'red', 'nl')
+    with app.server.test_request_context():
+        msg = run_callback(app, finish, 1, 0, 0, edit, shape, *fields, trigger='zone-save-btn.n_clicks')[0]
+        assert msg == TRANSLATIONS_NL['draw_login'] and zones.load() == []        # dashboard kan publiek zijn
+        original, auth.is_logged_in = auth.is_logged_in, lambda: True
+        try:
+            msg, edit_after, bar_after, *_ = run_callback(app, finish, 1, 0, 0, edit, shape, *fields,
+                                                          trigger='zone-save-btn.n_clicks')
+            zone = zones.load()[0]
+            assert msg == TRANSLATIONS_NL['draw_saved'] and edit_after is None and bar_after == {'display': 'none'}
+            assert zone['points'] == shape and zone['name'] == 'Nat' and zone['mode'] == 'keep_outside'
+            edit, bar, name, *_ = run_callback(app, start, 0, zone['id'], 0, 'nl', trigger='zone-edit-select.value')
+            assert edit == {'id': zone['id'], 'points': shape} and name == 'Nat'           # bestaande zone bewerken
+            run_callback(app, finish, 0, 1, 0, edit, None, *fields, trigger='zone-delete-btn.n_clicks', value=1)
+            assert zones.load() == []
+        finally:
+            auth.is_logged_in = original
+
+
+def test_zone_editing_redraw_is_not_overwritten_by_the_interval():
+    """Editor open: eigen callback tekent het diagram zonder de zone in bewerking; de seconde-tik doet niets.
+
+    Dash vervangt een lopend verzoek door een nieuwer verzoek van dezelfde callback: zat het hertekenen in de
+    ververs-callback, dan overschreef de tik het steeds (de oude zone bleef onder de editor staan).
+    """
+    import callbacks
+    import zones
+    from dash import Dash
+    setup_alerts([])
+    assert settings.save({'show_wood': ['on']}) == {}
+    assert zones.save([{'scope': 0, 'name': 'Opslag', 'color': 'blue', 'mode': 'none', 'level': 'alarm',
+                        'temp_min': 10, 'temp_max': 20, 'rh_min': 50, 'rh_max': 70, 'enabled': 'true'}]) == {}
+    editing = {'id': zones.load()[0]['id'], 'points': [[10, 50], [20, 50], [20, 70], [10, 70]]}
+    app = Dash(__name__)
+    callbacks.register_callbacks(app)
+    key = next(k for k, v in app.callback_map.items()
+               if 'wood-chart.figure' in k and [i['id'] for i in v['inputs']] == ['zone-edit'])
+    fig = app.callback_map[key]['callback'].__wrapped__(editing, 'nl', 0)
+    assert 'Opslag' not in [trace.name for trace in fig.data]
+    assert run_callback(app, 'wood-chart.figure', 5, 'nl', 0, editing, 'dashboard',
+                        trigger='graph-update.n_intervals') is callbacks.no_update
+
+
+def test_click_zone_in_wood_diagram_opens_editor():
+    """Klik op een zone in het houtdiagram: die zone gaat open in de editor (zonder keuzelijst)."""
+    import callbacks
+    import zones
+    from dash import Dash
+    setup_alerts([])
+    assert settings.save({'show_wood': ['on']}) == {}
+    assert zones.save([{'scope': 0, 'name': 'Opslag', 'color': 'blue', 'mode': 'none', 'level': 'alarm',
+                        'temp_min': 10, 'temp_max': 20, 'rh_min': 50, 'rh_max': 70, 'enabled': 'true'}]) == {}
+    zone_id = zones.load()[0]['id']
+    app = Dash(__name__)
+    callbacks.register_callbacks(app)
+    fig = run_callback(app, 'wood-chart.figure', 0, 'nl', 0, None, 'dashboard', trigger='selected-language.data')
+    curve = next(i for i, trace in enumerate(fig.data) if trace.name == 'Opslag')
+    assert fig.data[curve].hoveron == 'fills'                                   # klikbaar op het vlak zelf
+    figure = fig.to_plotly_json()
+    assert run_callback(app, 'zone-edit-select.value@', {'points': [{'curveNumber': curve}]}, figure,
+                        trigger='wood-chart.clickData') == zone_id
+    assert run_callback(app, 'zone-edit-select.value@', {'points': [{'curveNumber': len(fig.data) - 1}]}, figure,
+                        trigger='wood-chart.clickData') is callbacks.no_update   # sensorpunt: geen zone
+
+
+def test_zone_editor_script_is_wired():
+    """De sleep-editor (assets/zone_editor.js) is de clientside callback zones.edit en levert de punten aan Dash.
+
+    Het slepen zelf (hoeken, middenbollen, dubbelklik) wordt in de browser getest.
+    """
+    import callbacks
+    from dash import Dash
+    script = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets', 'zone_editor.js'),
+                  encoding='utf-8').read()
+    for needle in ('zones:', 'edit: function', "set_props('zone-edit-points'", 'zone-editor-mid', 'zone-editor-corner',
+                   'dblclick', 'pointerdown', 'plotly_afterplot'):
+        assert needle in script, needle
+    app = Dash(__name__)
+    callbacks.register_callbacks(app)
+    assert 'zone-editor-ready.data' in app.callback_map
 
 
 def test_zone_alarm_has_margin_at_the_edge():
@@ -723,59 +831,6 @@ def test_zone_alarm_has_margin_at_the_edge():
     assert not any('Schimmel' in x for x in outbox_texts())
     alerts.evaluate(kas, {'temperature': 20.0, 'humidity': 77.0}, now=7)
     assert any('Schimmel' in x for x in outbox_texts())
-
-
-def test_drawn_mollier_path_becomes_zone_points():
-    """Plotly tekenpad (x = °C, y = g/kg) naar zonepunten in °C × RV."""
-    import psychrometric
-    points = psychrometric.path_to_points('M20,7.29L30,13.31L25,40Z')
-    assert [round(t) for t, _ in points] == [20, 30, 25]
-    assert abs(points[0][1] - 50) < 1 and abs(points[1][1] - 50) < 1 and points[2][1] == 100   # boven verzadiging: 100 %
-
-
-def test_save_drawn_zone_only_when_logged_in():
-    import callbacks
-    import zones
-    from dash import Dash
-    setup_alerts([])
-    app = Dash(__name__)
-    callbacks.register_callbacks(app)
-    path = 'M20,7.29L30,13.31L25,4Z'
-    with app.server.test_request_context():
-        msg, drawing, _ = run_callback(app, 'draw-zone-msg.children', 1, path, 'Droog', 'keep_outside', 'red', 0, 'nl',
-                                       trigger='save-zone-btn.n_clicks')
-        assert msg == TRANSLATIONS_NL['draw_login'] and zones.load() == []   # dashboard kan publiek zijn
-        original, auth.is_logged_in = auth.is_logged_in, lambda: True
-        try:
-            assert run_callback(app, 'draw-zone-msg.children', 1, None, 'Droog', 'keep_outside', 'red', 0, 'nl',
-                                trigger='save-zone-btn.n_clicks')[0] == TRANSLATIONS_NL['draw_empty']
-            msg, drawing, _ = run_callback(app, 'draw-zone-msg.children', 1, path, 'Droog', 'keep_outside', 'red', 0, 'nl',
-                                           trigger='save-zone-btn.n_clicks')
-        finally:
-            auth.is_logged_in = original
-    assert msg == TRANSLATIONS_NL['draw_saved'] and drawing is False
-    zone = zones.load()[0]
-    assert zone['name'] == 'Droog' and zone['shape'] == 'polygon' and len(zone['points']) == 3 and zone['mode'] == 'keep_outside' and zone['color'] == 'red'
-
-
-def test_draw_mode_pauses_live_mollier_and_keeps_path():
-    import callbacks
-    import layout
-    from dash import Dash
-    setup_alerts([])
-    rendered = str(layout.create_layout())
-    assert 'draw-zone-btn' in rendered and 'draw-bar' in rendered
-    assert 'draw-zone-mode' in rendered and 'draw-zone-color' in rendered
-    app = Dash(__name__)
-    callbacks.register_callbacks(app)
-    drawing, bar, _ = run_callback(app, '..zone-drawing.data...draw-bar.style', 1, 0, trigger='draw-zone-btn.n_clicks')
-    assert drawing is True and bar == {}
-    assert run_callback(app, 'psychrometric-chart.figure', 1, 'nl', 0, True, trigger='graph-update.n_intervals') \
-        is callbacks.no_update                                          # live-verversing zou de tekening wissen
-    assert run_callback(app, 'zone-draw-path.data', {'shapes': [{'path': 'M1,2L3,4L5,6Z'}]}, True,
-                        trigger='psychrometric-chart.relayoutData') == 'M1,2L3,4L5,6Z'
-    drawing, bar, _ = run_callback(app, '..zone-drawing.data...draw-bar.style', 1, 1, trigger='cancel-zone-btn.n_clicks')
-    assert drawing is False and bar == {'display': 'none'}
 
 
 def test_zone_alarm_does_not_stick_after_zones_are_saved_again():
@@ -1318,10 +1373,10 @@ def test_wood_chart_and_board_follow_setting():
     conn.close()
     app = Dash(__name__)
     callbacks.register_callbacks(app)
-    assert run_callback(app, 'wood-chart.figure', 0, 'nl', 0, 'dashboard', trigger='selected-language.data') is \
+    assert run_callback(app, 'wood-chart.figure', 0, 'nl', 0, None, 'dashboard', trigger='selected-language.data') is \
         callbacks.no_update                                  # houtvocht staat uit
     assert settings.save({'show_wood': ['on']}) == {}
-    fig = run_callback(app, 'wood-chart.figure', 0, 'nl', 0, 'dashboard', trigger='selected-language.data')
+    fig = run_callback(app, 'wood-chart.figure', 0, 'nl', 0, None, 'dashboard', trigger='selected-language.data')
     assert {'Koelcel', 'Waarschuwing ≥ 18 %'} <= {trace.name for trace in fig.data}
     board, _ = run_callback(app, 'device-overview.children', 0, 'nl', 'board', 'dashboard', trigger='view-toggle.value')
     assert 'Houtvocht' in json.dumps(board, cls=plotly.utils.PlotlyJSONEncoder, ensure_ascii=False)
@@ -1387,6 +1442,22 @@ def test_wood_value_restarts_when_wood_settings_change():
     assert abs(wood.update(1, 20, 65, now=now) - 12.0) < 0.2
     assert settings.save({'wood_emc_offset': -2}) == {}
     assert abs(wood.update(1, 20, 65, now=now + 60) - 10.0) < 0.2
+
+
+def test_limits_shown_in_time_chart():
+    """Grenswaarden van de getoonde grootheid als lijnen in de tijdgrafiek (alleen die grootheid)."""
+    import callbacks
+    import pandas as pd
+    setup_alerts([{'scope': 0, 'metric': 'temperature', 'max_value': 8, 'level': 'alarm', 'enabled': 'true'},
+                  {'scope': 0, 'metric': 'temperature', 'min_value': 2, 'max_value': 6, 'level': 'warning',
+                   'enabled': 'true'},
+                  {'scope': 0, 'metric': 'humidity', 'max_value': 80, 'enabled': 'true'}])
+    df = pd.DataFrame({'timestamp': [1, 2], 'temperature': [5.0, 7.0], 'humidity': [60.0, 70.0], 'device_id': [1, 1]})
+    limits = callbacks.limit_rules('temperature', None)
+    fig = callbacks.metric_figure(df, {1: 'Kas'}, {}, 'temperature', TRANSLATIONS['nl'], 'dark', limits=limits)
+    lines = sorted((shape.y0, shape.line.color) for shape in fig.layout.shapes)
+    k = callbacks.THEMES['dark']
+    assert lines == [(2, k['warn']), (6, k['warn']), (8, k['alarm'])]
 
 
 def test_warning_and_alarm_levels():

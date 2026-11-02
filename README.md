@@ -66,7 +66,8 @@ A real-time climate monitoring dashboard for Modbus RTU temperature and humidity
   - Comfort Score (0-6, based on Humidex)
 - **Psychrometric chart**: Mollier diagram with live indicator and comfort zone visualization
 - **Wood moisture** (optional): equilibrium moisture content per sensor, a diagram with zones from your limits, warning and alarm levels
-- **Zones**: your own coloured areas of temperature × humidity in the Mollier and wood diagram (from min/max or drawn freely), with a notification when a sensor leaves a desired zone or enters a danger zone
+- **Zones**: your own coloured areas of temperature × humidity in the wood diagram, shaped by dragging corners, with a notification when a sensor leaves a desired zone or enters a danger zone
+- **Limits in the chart**: the limits of the shown quantity appear as dashed lines in the time chart
 - **Historical data replay**: Time-travel through data with preset buttons or custom date/time selection
 - **Interactive slider**: Live updates while dragging for smooth historical navigation
 - **Scientific analysis**: Humidex formula according to Environment Canada standard
@@ -102,11 +103,14 @@ A real-time climate monitoring dashboard for Modbus RTU temperature and humidity
 
 #### Mollier diagram
 ![Mollier diagram](img/mollier.png)
-*Current state of every sensor in its own colour, with saturation line, RH curves, comfort zone and your own zones (here a desired comfort zone and a mould-risk danger zone).*
+*Current state of every sensor in its own colour, with saturation line, RH curves and comfort zone.*
 
 #### Wood moisture
 ![Wood moisture diagram](img/wood-diagram.png)
-*Equilibrium wood moisture: lines of equal wood moisture, the 18 % warning and 20 % alarm limits and the zones.*
+*Equilibrium wood moisture: lines of equal wood moisture, the 18 % warning and 20 % alarm limits and your zones (here a desired comfort zone and a mould-risk danger zone).*
+
+![Zone editor](img/zone-editor.png)
+*Zone editor: drag the corners, drag a dot in the middle of a side to add a corner.*
 
 #### Historical replay
 ![Historical range](img/history-range.png)
@@ -291,7 +295,7 @@ ClimateMonitor/
 ├── translations.py             # Texts in NL, EN, DE, FR, ES
 ├── test_app.py                 # Automated tests
 ├── deploy/                     # Service install scripts (Linux, Windows)
-├── assets/                     # Logo (header and favicon), served by Dash
+├── assets/                     # Logo (header and favicon) and the zone editor script, served by Dash
 ├── img/                        # README screenshots
 ├── .env                        # Configuration (not in git)
 ├── .env.example                # Example configuration
@@ -331,13 +335,14 @@ Every sensor keeps the same colour everywhere (its marker, trend line, chart lin
 **Chart**: choose the quantity with the tabs (temperature, humidity, dew point, absolute humidity,
 comfort), and choose *All sensors (combined)* or a single sensor and the time range on the right.
 
-**Mollier diagram and replay**: shows the current state of all sensors and your zones. Select one
-sensor in the chart to enable *Choose range for historical analysis*.
+**Mollier diagram and replay**: shows the current state of all sensors. Select one sensor in the
+chart to enable *Choose range for historical analysis*.
 
-**Drawing a zone**: click *Draw zone* above the Mollier diagram, draw a closed shape with the mouse
-or a finger, give it a name, choose desired zone / danger zone / display only and a colour, and save
-(requires being logged in). The zone applies to the sensor selected above the chart, or to all
-sensors. Change it later in Settings → Notifications: limits → Zones.
+**Zones** (wood diagram): click **+ Zone** to start with a square. Drag the corners into place; drag
+the dot in the middle of a side to add a corner there (square → pentagon → …); double-click a corner
+to remove it. Works with mouse and touch. Give the zone a name, choose the sensor, *desired zone* /
+*danger zone* / *display only*, the level and a colour, and save (requires being logged in). To
+change or delete a zone, click it in the diagram or pick it from *Edit zone…*.
 
 ### Configuration
 
@@ -410,9 +415,9 @@ its detailed view and historical replay.
    - Add a limit per quantity (temperature, humidity, dew point, absolute humidity, wood moisture)
      with a minimum and/or maximum and a level (*Warning* or *Alarm*), for *All sensors* or for one
      sensor. A rule for one sensor replaces the rule for all sensors for that quantity and level.
-   - *Zones*: an area of temperature × humidity (min/max, or drawn in the Mollier diagram) with a
-     colour. *Desired zone* notifies when a sensor leaves it, *danger zone* when a sensor enters it,
-     *display only* just draws it.
+   - *Zones*: an area of temperature × humidity with a colour, shaped in the wood diagram.
+     *Desired zone* notifies when a sensor leaves it, *danger zone* when a sensor enters it,
+     *display only* just draws it. Settings lists the zones to change their other properties.
    - *Alarm delay*: how long a limit must be exceeded before an alert is sent (no alerts for spikes).
    - *Hysteresis*: how far back inside the limit (or away from a zone edge) a value must be before it
      counts as normal again, so a value hovering around the limit does not cause a stream of messages.
@@ -658,7 +663,7 @@ python test_app.py
 - Buses and sensors: validation, upgrade of existing data, data types and byte order, calibration, scanning, failure isolation
 - Notifications: limits and levels, zones, alarm delay, hysteresis, recovery, muting, offline alerts, retries
 - Wood moisture: formula against the Wood Handbook, response time, restart after settings change
-- Dashboard: form fields, zones in the diagrams, drawing zones, theme toggle, alarm window, phone layout
+- Dashboard: form fields, zone editor, limits in the chart, theme toggle, alarm window, phone layout
 - MQTT: topics, payloads, reconnect behaviour
 - Translations: same placeholders in every language, no untranslated text in the layout
 
@@ -673,7 +678,7 @@ pip freeze > requirements.txt
 
 - **app.py**: entry point, starts the Modbus reader, notifications, MQTT and the web server
 - **layout.py**: page structure, theme tokens (dark/light) and styling
-- **callbacks.py**: dashboard (board/meters, chart, status, Mollier and wood diagram, drawing zones, alarm window, theme)
+- **callbacks.py**: dashboard (board/meters, chart, status, Mollier and wood diagram, zone editor, alarm window, theme)
 - **settings_ui.py**: Settings tab
 - **settings.py** / **devices.py**: settings, buses and sensors stored in the database
 - **modbus_reader.py**: one thread per RS-485 bus, batched database writes

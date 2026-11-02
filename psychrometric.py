@@ -315,35 +315,3 @@ def add_device_points(fig, points):
         ))
     return fig
 
-
-def add_zones(fig, zone_list):
-    """Zones (veelhoek in temperatuur × RV) in het Mollier diagram; randen volgen de RV-lijnen."""
-    import zones
-    for zone in zone_list:
-        temps, ratios = [], []
-        points = zone['points']
-        for (t1, h1), (t2, h2) in zip(points, points[1:] + points[:1]):
-            for f in np.linspace(0, 1, 16, endpoint=False):
-                temp, rh = t1 + (t2 - t1) * f, h1 + (h2 - h1) * f
-                pw = 611.2 * np.exp(17.62 * temp / (243.12 + temp)) * rh / 100
-                temps.append(temp)
-                ratios.append(0.622 * pw / (101325 - pw) * 1000)
-        color = zones.COLORS[zone['color']]
-        fig.add_trace(go.Scatter(x=temps + temps[:1], y=ratios + ratios[:1], mode='lines', fill='toself',
-                                 name=zone['name'], fillcolor=zones.fill_color(zone['color']),
-                                 line=dict(color=color, width=1.5), hoverinfo='skip'))
-    if zone_list:   # zones onder de sensorpunten en lijnen leggen
-        fig.data = fig.data[-len(zone_list):] + fig.data[:-len(zone_list)]
-    return fig
-
-
-def path_to_points(path):
-    """Plotly tekenpad ('M20,7.3L30,13.3Z', x = °C, y = g/kg) naar zonepunten [[°C, RV %], ...]."""
-    import re
-    points = []
-    for temp, ratio in re.findall(r'(-?[\d.]+),(-?[\d.]+)', path or ''):
-        temp, w = float(temp), max(float(ratio), 0) / 1000
-        pw = w * 101325 / (0.622 + w)
-        pws = 611.2 * np.exp(17.62 * temp / (243.12 + temp))
-        points.append([round(temp, 2), round(float(min(max(pw / pws * 100, 0), 100)), 1)])
-    return points

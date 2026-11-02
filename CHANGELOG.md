@@ -7,7 +7,8 @@ All notable changes to Climate Monitor. Older versions: see the [GitHub releases
 ### Added
 - **Wood moisture** (equilibrium moisture content, USDA Wood Handbook) per sensor, with its own diagram, a correction for the wood species and a response time (averaged value, so short peaks do not trigger alarms). On/off in Settings → Display.
 - **Warning and alarm level** per limit, e.g. a warning at 18 % and an alarm at 20 % wood moisture.
-- **Zones** in the Mollier and wood diagram: coloured areas of temperature × humidity from min/max or drawn freely in the Mollier diagram, with a notification when a sensor leaves a desired zone or enters a danger zone.
+- **Zones** in the wood diagram: coloured areas of temperature × humidity with a notification when a sensor leaves a desired zone or enters a danger zone. A zone starts as a square; drag the corners, drag the dot in the middle of a side to add a corner, double-click a corner to remove it. Click a zone to change or delete it.
+- **Limits in the time chart** as dashed lines (yellow = warning, red = alarm).
 - **Alarm window** from the top bar with muting per alarm (15 minutes to 24 hours).
 - **Dark/light toggle** in the top bar, remembered per browser.
 - **Logo** in the top bar and as favicon.

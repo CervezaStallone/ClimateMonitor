@@ -111,7 +111,9 @@ def figure(points, limits, t, k, areas=()):
         corners = zone['points'] + zone['points'][:1]
         fig.add_trace(go.Scatter(x=[p[0] for p in corners], y=[p[1] for p in corners], mode='lines', fill='toself',
                                  name=zone['name'], fillcolor=zones.fill_color(zone['color']),
-                                 line=dict(color=zones.COLORS[zone['color']], width=1.5), hoverinfo='skip'))
+                                 line=dict(color=zones.COLORS[zone['color']], width=1.5),
+                                 # klikbaar op het vlak: opent de zone in de editor (meta = zone-id)
+                                 hoveron='fills', hoverinfo='name', meta=zone.get('id')))
     for level in ('warning', 'alarm'):   # alarm als laatste: ligt over de waarschuwing
         color = k['warn'] if level == 'warning' else k['alarm']
         for low, high, zone_level in limits:

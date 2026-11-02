@@ -152,6 +152,13 @@ HTML_TEMPLATE = '''
             .draw-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
             .draw-actions .input { width: 220px; max-width: 100%; }
             .draw-select { width: 230px; max-width: 100%; }
+            .zone-editor { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; z-index: 5; }
+            .zone-editor-shape { fill: var(--accent); fill-opacity: .14; stroke: var(--accent); stroke-width: 2; stroke-dasharray: 6 4; }
+            .zone-editor-corner { fill: var(--panel); stroke: var(--accent); stroke-width: 2.5; pointer-events: all; cursor: grab; touch-action: none; }
+            .zone-editor-corner:hover { fill: var(--accent); }
+            .zone-editor-mid { fill: var(--accent); fill-opacity: .55; pointer-events: all; cursor: copy; touch-action: none; }
+            .zone-editor-mid:hover { fill-opacity: 1; }
+            @media (pointer: coarse) { .zone-editor-corner { r: 13px; } .zone-editor-mid { r: 10px; } }
             .slider-box { padding: 4px 16px 18px; }
             .slider-time { font-family: var(--mono); font-size: 15px; margin-bottom: 8px; }
 
@@ -341,6 +348,20 @@ def current_theme():
     return mode if mode in THEMES else 'dark'
 
 
+def zone_options():
+    """Keuzelijst 'Zone bewerken…' in het houtpaneel."""
+    return [{'label': z['name'], 'value': z['id']} for z in zones.load()]
+
+
+def level_options(t):
+    return [{'label': t[f'opt_level_{level}'], 'value': level} for level in ('warning', 'alarm')]
+
+
+def scope_options(t):
+    return [{'label': t['opt_all_devices'], 'value': 0}] + [
+        {'label': f"#{d['id']} {d['name']}", 'value': d['id']} for d in devices.list_devices()]
+
+
 def zone_mode_options(t):
     return [{'label': t[f'opt_mode_{mode}'], 'value': mode} for mode in zones.MODES]
 
@@ -409,24 +430,6 @@ def create_layout():
             html.Section(id='mollier-panel', className='panel', style=mollier_style(), children=[
                 html.Div(className='panel-head', children=[
                     html.Span(id='label-psychrometric-chart', className='panel-title', children=t['psychrometric_chart']),
-                    html.Button(t['btn_draw_zone'], id='draw-zone-btn', n_clicks=0, className='btn btn-small'),
-                ]),
-                # Zone tekenen: zolang dit open is pauzeert de live-verversing (die zou de tekening wissen)
-                dcc.Store(id='zone-drawing', data=False),
-                dcc.Store(id='zone-draw-path'),
-                html.Div(id='draw-bar', className='draw-bar', style={'display': 'none'}, children=[
-                    html.Div(t['hint_draw_zone'], id='draw-zone-hint', className='hint'),
-                    html.Div(className='draw-actions', children=[
-                        dcc.Input(id='draw-zone-name', type='text', placeholder=t['lbl_zone_name'], className='input',
-                                  maxLength=50),
-                        dcc.Dropdown(id='draw-zone-mode', options=zone_mode_options(t), value='keep_outside',
-                                     clearable=False, searchable=False, className='draw-select'),
-                        dcc.Dropdown(id='draw-zone-color', options=zone_color_options(t), value='red',
-                                     clearable=False, searchable=False, className='draw-select'),
-                        html.Button(t['btn_save_zone'], id='save-zone-btn', n_clicks=0, className='btn btn-primary btn-small'),
-                        html.Button(t['btn_cancel'], id='cancel-zone-btn', n_clicks=0, className='btn btn-small'),
-                        html.Span(id='draw-zone-msg', className='hint'),
-                    ]),
                 ]),
                 html.Div(className='panel-body', children=dcc.Graph(
                     id='psychrometric-chart', config={'displaylogo': False, 'displayModeBar': False})),
@@ -446,6 +449,37 @@ def create_layout():
             html.Section(id='wood-panel', className='panel', style=wood_style(), children=[
                 html.Div(className='panel-head', children=[
                     html.Span(id='label-wood-chart', className='panel-title', children=t['wood_chart']),
+                    html.Div(className='draw-actions', children=[
+                        dcc.Dropdown(id='zone-edit-select', options=zone_options(), value=None, placeholder=t['lbl_edit_zone'],
+                                     clearable=False, searchable=False, className='draw-select'),
+                        html.Button(t['btn_new_zone'], id='zone-add-btn', n_clicks=0, className='btn btn-small'),
+                    ]),
+                ]),
+                # Zone-editor: assets/zone_editor.js tekent sleepbare hoeken en middenbollen over het diagram en
+                # schrijft de punten in zone-edit-points; zone-edit = {'id', 'points'} van de zone in bewerking
+                dcc.Store(id='zone-edit'),
+                dcc.Store(id='zone-edit-points'),
+                dcc.Store(id='zone-editor-ready'),
+                html.Div(id='zone-edit-bar', className='draw-bar', style={'display': 'none'}, children=[
+                    html.Div(t['hint_edit_zone'], id='zone-edit-hint', className='hint'),
+                    html.Div(className='draw-actions', children=[
+                        dcc.Input(id='zone-edit-name', type='text', placeholder=t['lbl_zone_name'], className='input',
+                                  maxLength=50),
+                        dcc.Dropdown(id='zone-edit-scope', options=[], value=0, clearable=False, searchable=False,
+                                     className='draw-select'),
+                        dcc.Dropdown(id='zone-edit-mode', options=zone_mode_options(t), value='keep_outside',
+                                     clearable=False, searchable=False, className='draw-select'),
+                        dcc.Dropdown(id='zone-edit-level', options=level_options(t), value='warning',
+                                     clearable=False, searchable=False, className='draw-select'),
+                        dcc.Dropdown(id='zone-edit-color', options=zone_color_options(t), value='red',
+                                     clearable=False, searchable=False, className='draw-select'),
+                    ]),
+                    html.Div(className='draw-actions', children=[
+                        html.Button(t['btn_save_zone'], id='zone-save-btn', n_clicks=0, className='btn btn-primary btn-small'),
+                        html.Button(t['btn_delete_zone'], id='zone-delete-btn', n_clicks=0, className='btn btn-small'),
+                        html.Button(t['btn_cancel'], id='zone-cancel-btn', n_clicks=0, className='btn btn-small btn-link'),
+                        html.Span(id='zone-edit-msg', className='hint'),
+                    ]),
                 ]),
                 html.Div(className='panel-body', children=dcc.Graph(
                     id='wood-chart', config={'displaylogo': False, 'displayModeBar': False})),
