@@ -661,7 +661,7 @@ def register_settings_callbacks(app):
         options = layout.metric_options(_t(lang))
         if metric not in [o['value'] for o in options]:
             metric = 'temperature'
-        return (f"theme-{settings.get('dashboard_theme')}", settings.get('dashboard_view'), options, metric,
+        return (f'theme-{layout.current_theme()}', settings.get('dashboard_view'), options, metric,
                 layout.mollier_style(), layout.wood_style())
 
     @app.callback(

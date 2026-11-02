@@ -779,6 +779,39 @@ def test_alarm_window_lists_alarms_and_mutes_when_logged_in():
     assert alerts.is_muted(cel['id'], 'temperature') and TRANSLATIONS_NL['muted_until'].split('{')[0] in listing
 
 
+def test_theme_follows_browser_choice_before_setting():
+    """Schakelaar in de kopbalk: keuze per browser (cookie); zonder keuze de standaard uit Settings."""
+    import callbacks
+    from flask import Flask
+    fresh_settings()
+    assert settings.save({'dashboard_theme': 'dark'}) == {}
+    server = Flask(__name__)
+    with server.test_request_context(headers={'Cookie': 'theme=light'}):
+        assert callbacks.theme_mode() == 'light'
+    with server.test_request_context(headers={'Cookie': 'theme=paars'}):
+        assert callbacks.theme_mode() == 'dark'
+    with server.test_request_context():
+        assert callbacks.theme_mode() == 'dark'
+    assert callbacks.theme_mode() == 'dark'                                     # buiten een request (threads)
+
+
+def test_theme_toggle_in_header_remembers_choice():
+    import callbacks
+    import layout
+    from dash import Dash
+    from dash._callback_context import context_value
+    fresh_settings()
+    app = Dash(__name__)
+    callbacks.register_callbacks(app)
+    with app.server.test_request_context(headers={'Cookie': 'theme=light'}):
+        root = layout.create_layout()
+        toggle = next(c for c in components(root) if getattr(c, 'id', None) == 'theme-toggle')
+        assert root.className == 'theme-light' and toggle.value == 'light'
+    css_class, applied = run_callback(app, 'theme-applied.data', 'dark', trigger='theme-toggle.value')
+    assert css_class == 'theme-dark' and applied == 'dark'
+    assert 'theme=dark' in context_value.get().dash_response.headers.get('Set-Cookie')
+
+
 def test_board_shows_zone_alarm():
     import json
     import callbacks
@@ -1168,7 +1201,8 @@ def run_callback(app, output, *args, trigger, value=None):
     """Roep een geregistreerde Dash callback aan alsof 'trigger' net veranderde (naar value)."""
     from dash._callback_context import context_value
     from dash._utils import AttributeDict
-    context_value.set(AttributeDict(triggered_inputs=[{'prop_id': trigger, 'value': value}]))
+    from flask import Response
+    context_value.set(AttributeDict(triggered_inputs=[{'prop_id': trigger, 'value': value}], dash_response=Response()))
     key = output if output in app.callback_map else next(k for k in app.callback_map if output in k)
     return app.callback_map[key]['callback'].__wrapped__(*args)
 

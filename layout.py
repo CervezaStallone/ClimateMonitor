@@ -1,4 +1,5 @@
 from dash import dcc, html
+from flask import has_request_context, request
 
 import devices
 import settings
@@ -322,12 +323,32 @@ def range_options(t):
     return [{'label': t[key], 'value': value} for key, value in TIME_RANGES]
 
 
+THEMES = ('dark', 'light')
+
+
+def current_theme():
+    """Thema: keuze van deze browser (cookie van de schakelaar in de kopbalk), anders de standaard uit Settings.
+
+    Ook de grafieken (op de server gekleurd) gebruiken dit: elke callback is een request met de cookie.
+    """
+    mode = request.cookies.get('theme') if has_request_context() else None
+    if mode not in THEMES:
+        mode = settings.get('dashboard_theme')
+    return mode if mode in THEMES else 'dark'
+
+
+def theme_options(t):
+    return [{'label': t[f'opt_dashboard_theme_{mode}'], 'value': mode} for mode in THEMES]
+
+
 def create_layout():
-    """Creëert de hoofdlayout (per page load: taal, thema en weergave uit Settings)"""
+    """Creëert de hoofdlayout (per page load: taal en weergave uit Settings, thema van deze browser)"""
     lang = settings.get('default_language')
     t = TRANSLATIONS[lang]
-    return html.Div(id='app-root', className=f"theme-{settings.get('dashboard_theme')}", children=[
+    theme = current_theme()
+    return html.Div(id='app-root', className=f'theme-{theme}', children=[
         dcc.Location(id='url', refresh=False),
+        dcc.Store(id='theme-applied'),
         dcc.Store(id='selected-language', data=lang),
         dcc.Store(id='graph-relayout-data', data={}),
         dcc.Store(id='historical-data-store'),
@@ -344,6 +365,7 @@ def create_layout():
                 html.Button(id='status-summary', className='summary summary-btn', n_clicks=0, title=t['alarms_open']),
                 dcc.RadioItems(id='view-toggle', className='seg', options=view_options(t),
                                value=settings.get('dashboard_view')),
+                dcc.RadioItems(id='theme-toggle', className='seg', options=theme_options(t), value=theme),
                 dcc.Dropdown(id='language-selector', className='lang', clearable=False, searchable=False,
                              options=[{'label': LANGUAGE_NAMES[code], 'value': code} for code in LANGUAGE_NAMES],
                              value=lang),

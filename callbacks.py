@@ -41,8 +41,8 @@ METRIC_KEYS = {'temperature': 'temperature', 'humidity': 'humidity', 'dewpoint':
 
 
 def theme_mode():
-    mode = settings.get('dashboard_theme')
-    return mode if mode in THEMES else 'dark'
+    """Thema van deze browser (zie layout.current_theme)."""
+    return layout.current_theme()
 
 
 def device_colors(mode):
@@ -245,7 +245,8 @@ def register_callbacks(app):
          Output('time-range-dropdown', 'options'),
          Output('label-psychrometric-chart', 'children'),
          Output('label-time-position', 'children'),
-         Output('label-wood-chart', 'children')],
+         Output('label-wood-chart', 'children'),
+         Output('theme-toggle', 'options')],
         [Input('language-selector', 'value')]
     )
     def update_language(lang):
@@ -254,7 +255,8 @@ def register_callbacks(app):
             lang = 'en'
         t = TRANSLATIONS[lang]
         return (lang, t['app_name'], layout.nav_options(t), layout.view_options(t), layout.metric_options(t),
-                layout.range_options(t), t['psychrometric_chart'], t['time_position'], t['wood_chart'])
+                layout.range_options(t), t['psychrometric_chart'], t['time_position'], t['wood_chart'],
+                layout.theme_options(t))
 
     @app.callback(
         [Output('page-dashboard', 'style'),
@@ -276,6 +278,21 @@ def register_callbacks(app):
         return f'theme-{theme_mode()}'
 
     @app.callback(
+        [Output('app-root', 'className', allow_duplicate=True),
+         Output('theme-applied', 'data')],
+        Input('theme-toggle', 'value'),
+        prevent_initial_call=True
+    )
+    def set_theme(mode):
+        """Schakelaar in de kopbalk: keuze per browser onthouden (cookie, 1 jaar).
+
+        'theme-applied' komt pas na dit antwoord (cookie staat dan in de browser): de grafiek hangt daaraan.
+        """
+        mode = mode if mode in THEMES else 'dark'
+        callback_context.response.set_cookie('theme', mode, max_age=365 * 86400, samesite='Lax')
+        return f'theme-{mode}', mode
+
+    @app.callback(
         [Output('live-graph', 'figure'),
          Output('data-count', 'children'),
          Output('graph-relayout-data', 'data')],
@@ -284,11 +301,13 @@ def register_callbacks(app):
          Input('live-graph', 'relayoutData'),
          Input('selected-language', 'data'),
          Input('device-selector', 'value'),
-         Input('metric-tabs', 'value')],
+         Input('metric-tabs', 'value'),
+         Input('theme-applied', 'data')],   # na de themaschakelaar meteen hertekenen
         [State('graph-relayout-data', 'data'),
          State('main-tabs', 'value')]
     )
-    def update_graph(n, time_range_minutes, relayout_data, lang, device_sel, metric, stored_relayout, tab):
+    def update_graph(n, time_range_minutes, relayout_data, lang, device_sel, metric, theme_applied, stored_relayout,
+                     tab):
         """Grafiek van één grootheid: één lijn per sensor of alleen de gekozen sensor"""
         metric = metric or 'temperature'
         time_range_minutes = time_range_minutes or 1440
