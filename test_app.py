@@ -682,8 +682,10 @@ def test_zone_alarms_on_leaving_and_entering():
     assert len(outbox_texts()) == 2 and alerts.device_status(cel['id'])[0] == 'ok'
 
 
-def test_zones_drawn_in_mollier_and_wood_diagram():
+def test_zones_only_in_wood_diagram():
+    """Zones horen bij het houtdiagram (temperatuur × RV); het Mollier-diagram toont alleen de vaste comfortzone."""
     import callbacks
+    import layout
     import zones
     from dash import Dash
     setup_alerts([])
@@ -692,11 +694,12 @@ def test_zones_drawn_in_mollier_and_wood_diagram():
                         'temp_min': 10, 'temp_max': 20, 'rh_min': 50, 'rh_max': 70, 'enabled': 'true'}]) == {}
     app = Dash(__name__)
     callbacks.register_callbacks(app)
-    for output in ('psychrometric-chart.figure', 'wood-chart.figure'):
-        fig = run_callback(app, output, 0, 'nl', 0, *(['dashboard'] if output == 'wood-chart.figure' else [False]),
-                           trigger='selected-language.data')
-        zone = next(trace for trace in fig.data if trace.name == 'Opslag')
-        assert zone.fill == 'toself' and zone.line.color == zones.COLORS['blue'], output
+    mollier = run_callback(app, 'psychrometric-chart.figure', 0, 'nl', 0, trigger='selected-language.data')
+    assert 'Opslag' not in [trace.name for trace in mollier.data]
+    assert 'draw-zone-btn' not in str(layout.create_layout())
+    wood = run_callback(app, 'wood-chart.figure', 0, 'nl', 0, 'dashboard', trigger='selected-language.data')
+    zone = next(trace for trace in wood.data if trace.name == 'Opslag')
+    assert zone.fill == 'toself' and zone.line.color == zones.COLORS['blue']
 
 
 def test_zone_alarm_has_margin_at_the_edge():
@@ -723,59 +726,6 @@ def test_zone_alarm_has_margin_at_the_edge():
     assert not any('Schimmel' in x for x in outbox_texts())
     alerts.evaluate(kas, {'temperature': 20.0, 'humidity': 77.0}, now=7)
     assert any('Schimmel' in x for x in outbox_texts())
-
-
-def test_drawn_mollier_path_becomes_zone_points():
-    """Plotly tekenpad (x = °C, y = g/kg) naar zonepunten in °C × RV."""
-    import psychrometric
-    points = psychrometric.path_to_points('M20,7.29L30,13.31L25,40Z')
-    assert [round(t) for t, _ in points] == [20, 30, 25]
-    assert abs(points[0][1] - 50) < 1 and abs(points[1][1] - 50) < 1 and points[2][1] == 100   # boven verzadiging: 100 %
-
-
-def test_save_drawn_zone_only_when_logged_in():
-    import callbacks
-    import zones
-    from dash import Dash
-    setup_alerts([])
-    app = Dash(__name__)
-    callbacks.register_callbacks(app)
-    path = 'M20,7.29L30,13.31L25,4Z'
-    with app.server.test_request_context():
-        msg, drawing, _ = run_callback(app, 'draw-zone-msg.children', 1, path, 'Droog', 'keep_outside', 'red', 0, 'nl',
-                                       trigger='save-zone-btn.n_clicks')
-        assert msg == TRANSLATIONS_NL['draw_login'] and zones.load() == []   # dashboard kan publiek zijn
-        original, auth.is_logged_in = auth.is_logged_in, lambda: True
-        try:
-            assert run_callback(app, 'draw-zone-msg.children', 1, None, 'Droog', 'keep_outside', 'red', 0, 'nl',
-                                trigger='save-zone-btn.n_clicks')[0] == TRANSLATIONS_NL['draw_empty']
-            msg, drawing, _ = run_callback(app, 'draw-zone-msg.children', 1, path, 'Droog', 'keep_outside', 'red', 0, 'nl',
-                                           trigger='save-zone-btn.n_clicks')
-        finally:
-            auth.is_logged_in = original
-    assert msg == TRANSLATIONS_NL['draw_saved'] and drawing is False
-    zone = zones.load()[0]
-    assert zone['name'] == 'Droog' and zone['shape'] == 'polygon' and len(zone['points']) == 3 and zone['mode'] == 'keep_outside' and zone['color'] == 'red'
-
-
-def test_draw_mode_pauses_live_mollier_and_keeps_path():
-    import callbacks
-    import layout
-    from dash import Dash
-    setup_alerts([])
-    rendered = str(layout.create_layout())
-    assert 'draw-zone-btn' in rendered and 'draw-bar' in rendered
-    assert 'draw-zone-mode' in rendered and 'draw-zone-color' in rendered
-    app = Dash(__name__)
-    callbacks.register_callbacks(app)
-    drawing, bar, _ = run_callback(app, '..zone-drawing.data...draw-bar.style', 1, 0, trigger='draw-zone-btn.n_clicks')
-    assert drawing is True and bar == {}
-    assert run_callback(app, 'psychrometric-chart.figure', 1, 'nl', 0, True, trigger='graph-update.n_intervals') \
-        is callbacks.no_update                                          # live-verversing zou de tekening wissen
-    assert run_callback(app, 'zone-draw-path.data', {'shapes': [{'path': 'M1,2L3,4L5,6Z'}]}, True,
-                        trigger='psychrometric-chart.relayoutData') == 'M1,2L3,4L5,6Z'
-    drawing, bar, _ = run_callback(app, '..zone-drawing.data...draw-bar.style', 1, 1, trigger='cancel-zone-btn.n_clicks')
-    assert drawing is False and bar == {'display': 'none'}
 
 
 def test_zone_alarm_does_not_stick_after_zones_are_saved_again():

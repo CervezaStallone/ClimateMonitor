@@ -409,24 +409,6 @@ def create_layout():
             html.Section(id='mollier-panel', className='panel', style=mollier_style(), children=[
                 html.Div(className='panel-head', children=[
                     html.Span(id='label-psychrometric-chart', className='panel-title', children=t['psychrometric_chart']),
-                    html.Button(t['btn_draw_zone'], id='draw-zone-btn', n_clicks=0, className='btn btn-small'),
-                ]),
-                # Zone tekenen: zolang dit open is pauzeert de live-verversing (die zou de tekening wissen)
-                dcc.Store(id='zone-drawing', data=False),
-                dcc.Store(id='zone-draw-path'),
-                html.Div(id='draw-bar', className='draw-bar', style={'display': 'none'}, children=[
-                    html.Div(t['hint_draw_zone'], id='draw-zone-hint', className='hint'),
-                    html.Div(className='draw-actions', children=[
-                        dcc.Input(id='draw-zone-name', type='text', placeholder=t['lbl_zone_name'], className='input',
-                                  maxLength=50),
-                        dcc.Dropdown(id='draw-zone-mode', options=zone_mode_options(t), value='keep_outside',
-                                     clearable=False, searchable=False, className='draw-select'),
-                        dcc.Dropdown(id='draw-zone-color', options=zone_color_options(t), value='red',
-                                     clearable=False, searchable=False, className='draw-select'),
-                        html.Button(t['btn_save_zone'], id='save-zone-btn', n_clicks=0, className='btn btn-primary btn-small'),
-                        html.Button(t['btn_cancel'], id='cancel-zone-btn', n_clicks=0, className='btn btn-small'),
-                        html.Span(id='draw-zone-msg', className='hint'),
-                    ]),
                 ]),
                 html.Div(className='panel-body', children=dcc.Graph(
                     id='psychrometric-chart', config={'displaylogo': False, 'displayModeBar': False})),
