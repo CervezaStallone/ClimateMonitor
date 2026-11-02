@@ -107,6 +107,7 @@ HTML_TEMPLATE = '''
             /* Bord */
             .board-wrap { overflow-x: auto; }
             .board { width: 100%; border-collapse: collapse; }
+            .board .th-short { display: none; }
             .board th { text-align: left; font-weight: 600; font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
                         color: var(--muted); padding: 10px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
             .board td { padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
@@ -131,6 +132,7 @@ HTML_TEMPLATE = '''
             .meter-display .v1 { font-size: 46px; } .meter-display .v2 { font-size: 28px; }
             .meter-display .u { font-size: 13px; color: var(--muted); margin-left: 6px; }
             .meter-display .is-alarm { color: var(--alarm); } .meter-display .is-warn { color: var(--warn); }
+            .meter-stats .is-alarm { color: var(--alarm); font-weight: 600; } .meter-stats .is-warn { color: var(--warn); font-weight: 600; }
             .meter-stats { display: flex; justify-content: space-between; gap: 8px; margin-top: 10px; font-family: var(--mono); font-size: 12px; color: var(--muted); }
             .meter .spark { margin-top: 8px; width: 100%; }
             .empty { padding: 28px; color: var(--muted); }
@@ -238,6 +240,9 @@ HTML_TEMPLATE = '''
                 .panel-head { padding: 0 6px; }
                 .controls { width: 100%; } .controls > div:first-child, .controls > div:last-child { width: auto; flex: 1; min-width: 0; }
                 .board .col-status { display: none; } .st.st-inline { display: inline-flex; }
+                .board th { padding: 8px 5px; } .board .th-full { display: none; } .board .th-short { display: inline; }
+                .board td { padding: 8px 5px; } .board .lcd { font-size: 16px; padding: 4px 6px; } .board .lcd .u { font-size: 10px; margin-left: 2px; }
+                .board .name { font-size: 14px; }
                 .tabs label { padding: 10px 9px 8px; }
                 .settings { padding: 14px; }
                 .cfg-row { grid-template-columns: 1fr 1fr; }

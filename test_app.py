@@ -912,6 +912,55 @@ def test_wood_chart_and_board_follow_setting():
     assert 'Houtvocht' in json.dumps(board, cls=plotly.utils.PlotlyJSONEncoder, ensure_ascii=False)
 
 
+def test_wood_column_stays_visible_on_phones():
+    """Houtvocht is voor wie het aanzet de hoofdwaarde: geen col-wide (die is verborgen op smalle schermen)."""
+    import callbacks
+    from dash import Dash
+    setup_alerts([])
+    assert settings.save({'show_wood': ['on']}) == {}
+    app = Dash(__name__)
+    callbacks.register_callbacks(app)
+    board, _ = run_callback(app, 'device-overview.children', 0, 'nl', 'board', 'dashboard', trigger='view-toggle.value')
+    head = board.children.children[0].children.children
+    wood_head = next(cell for cell in head if cell is not None and TRANSLATIONS_NL['wood_emc'] in str(cell.children))
+    assert 'col-wide' not in (wood_head.className or '')
+
+
+def test_board_has_short_headers_for_phones():
+    """Lange woorden als 'Luchtvochtigheid' passen niet op een telefoon: daar korte koppen."""
+    import callbacks
+    from dash import Dash
+    setup_alerts([])
+    assert settings.save({'show_wood': ['on']}) == {}
+    app = Dash(__name__)
+    callbacks.register_callbacks(app)
+    board, _ = run_callback(app, 'device-overview.children', 0, 'nl', 'board', 'dashboard', trigger='view-toggle.value')
+    head = board.children.children[0].children.children
+    shorts = [span.children for cell in head if cell is not None and isinstance(cell.children, list)
+              for span in cell.children if getattr(span, 'className', '') == 'th-short']
+    assert shorts == [TRANSLATIONS_NL['short_temperature'], TRANSLATIONS_NL['short_humidity'], TRANSLATIONS_NL['short_wood']]
+
+
+def test_invalid_humidity_is_rejected_not_clamped_to_zero():
+    """Alleen de correctie mag worden begrensd; een kapotte ruwe meting blijft een fout (geen stille 0 %)."""
+    fresh_settings()
+    q = queue.Queue()
+    dev = {**device('Koelcel'), 'id': 1}
+    poller = modbus_reader.BusPoller({**bus(), 'id': 1}, [dev], q)
+    poller.poll(FakeInstrument({1: 188, 2: -50}), dev)      # -5.0 % RV: onmogelijk
+    assert q.empty() and 'out of range' in devices.status(1)['error']
+
+
+def test_rule_hint_explains_levels():
+    for lang, texts in TRANSLATIONS.items():
+        assert texts['opt_level_warning'].lower() in texts['hint_rules'].lower(), lang
+
+
+def test_comfort_uses_same_dewpoint_as_measurements():
+    import callbacks
+    assert callbacks.humidex_score(26, 30) == 4     # Magnus: humidex 26.0; de oude vuistregel gaf 28.3 (score 5)
+
+
 def test_warning_and_alarm_levels():
     names = setup_alerts([{'scope': 0, 'metric': 'wood_emc', 'max_value': 18, 'level': 'warning', 'enabled': 'true'},
                           {'scope': 0, 'metric': 'wood_emc', 'max_value': 20, 'level': 'alarm', 'enabled': 'true'}])

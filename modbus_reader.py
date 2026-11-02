@@ -55,9 +55,12 @@ def read_device(instrument, device):
     """Lees temperatuur en luchtvochtigheid (signed registers × schaal)."""
     raw_temp = instrument.read_register(device['register_temp'], 0, device['function_code'], signed=True)
     raw_humidity = instrument.read_register(device['register_humidity'], 0, device['function_code'], signed=True)
-    # Kalibratie per sensor; RV na correctie binnen 0-100 % (een sensor op 99 % + 3 is geen meetfout)
+    # Kalibratie per sensor. Alleen een geldige meting (0-100 %) wordt na de correctie begrensd: een sensor op
+    # 99 % + 3 is geen meetfout, een ruwe -5 % wel (die moet als 'out of range' geweigerd worden, niet 0 % worden)
     temperature = raw_temp * device['scale_temp'] + device.get('offset_temp', 0)
-    humidity = min(max(raw_humidity * device['scale_humidity'] + device.get('offset_humidity', 0), 0), 100)
+    humidity = raw_humidity * device['scale_humidity']
+    if HUMIDITY_RANGE[0] <= humidity <= HUMIDITY_RANGE[1]:
+        humidity = min(max(humidity + device.get('offset_humidity', 0), HUMIDITY_RANGE[0]), HUMIDITY_RANGE[1])
     return round(temperature, 3), round(humidity, 3)
 
 

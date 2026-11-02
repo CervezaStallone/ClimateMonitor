@@ -12,6 +12,7 @@ import settings
 import wood
 from translations import TRANSLATIONS
 from database import get_all_measurement_tables, build_union_query, DB_FILE
+from modbus_reader import derived_values
 from psychrometric import add_device_points, create_psychrometric_chart, create_psychrometric_chart_historical
 
 # Categorisch palet per sensor (vaste volgorde, gevalideerd op kleurenblindheid en contrast).
@@ -105,7 +106,7 @@ def humidex_score(temp, hum):
     """Comfort score 0-6 op basis van Humidex (Environment Canada schaal)"""
     if pd.isna(temp) or pd.isna(hum):
         return None
-    dewpoint_kelvin = temp - ((100 - hum) / 5.0) + 273.15
+    dewpoint_kelvin = derived_values(temp, hum)[0] + 273.15   # zelfde dauwpunt (Magnus) als de metingen
     e = 6.11 * math.exp(5417.7530 * ((1/273.16) - (1/dewpoint_kelvin)))
     humidex = temp + 0.5555 * (e - 10)
     for limit, score in ((20, 0), (27, 4), (30, 5), (35, 6), (40, 3), (46, 2), (54, 1)):
@@ -711,10 +712,16 @@ def register_callbacks(app):
 
     def render_board(states, colors, t):
         show_comfort, show_wood = settings.get('show_comfort'), settings.get('show_wood')
-        head = html.Tr([html.Th('', className='bar'), html.Th(t['hdr_sensor']), html.Th(t['temperature']), html.Th(t['humidity']),
+
+        def th(key, short_key, className=None):
+            """Kop met een korte variant voor smalle schermen (CSS toont één van beide)."""
+            return html.Th([html.Span(t[key], className='th-full'), html.Span(t[short_key], className='th-short')],
+                           className=className)
+        head = html.Tr([html.Th('', className='bar'), html.Th(t['hdr_sensor']), th('temperature', 'short_temperature'),
+                        th('humidity', 'short_humidity'),
                         html.Th(t['dewpoint'], className='col-wide'), html.Th(t['abs_humidity'], className='col-wide'),
                         html.Th(t['comfort'], className='col-wide') if show_comfort else None,
-                        html.Th(t['wood_emc'], className='col-wide') if show_wood else None,
+                        th('wood_emc', 'short_wood', 'col-wood') if show_wood else None,
                         html.Th(t['hdr_trend'], className='col-wide'),
                         html.Th(t['hdr_status'], className='col-status')])
         rows = []
@@ -732,7 +739,7 @@ def register_callbacks(app):
                 html.Td(value_cell(s_['dew'], '°C', ph.get('dewpoint')), className='col-wide'),
                 html.Td(value_cell(s_['ah'], 'g/m³', ph.get('absolute_humidity')), className='col-wide'),
                 html.Td(s_['comfort'], className='comfort col-wide') if show_comfort else None,
-                html.Td(value_cell(s_['wood'], '%', ph.get('wood_emc')), className='col-wide') if show_wood else None,
+                html.Td(value_cell(s_['wood'], '%', ph.get('wood_emc')), className='col-wood') if show_wood else None,
                 html.Td(spark(s_['id'], color), className='col-wide'),
                 html.Td([html.Span(s_['label'], className=f"st st-{s_['status']}"),
                          html.Span(s_['sub'], className='st-sub')], className='col-status'),
