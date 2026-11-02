@@ -185,9 +185,14 @@ def evaluate(device, values, now=None):
             if metric in values:
                 _evaluate_metric(device, metric, level, values[metric], rule, delay, now)
         if 'temperature' in values and 'humidity' in values:
-            for zone in zones.effective(device['id']):
-                if zone['mode'] != 'none':
-                    _evaluate_zone(device, zone, values['temperature'], values['humidity'], delay, now)
+            active = [z for z in zones.effective(device['id']) if z['mode'] != 'none']
+            for zone in active:
+                _evaluate_zone(device, zone, values['temperature'], values['humidity'], delay, now)
+            # Toestand van zones die weg zijn, uit staan of nieuwe id's kregen (opnieuw opgeslagen) opruimen:
+            # anders blijft een oud zone-alarm voor altijd op het dashboard staan
+            current = {f"zone:{z['id']}" for z in active}
+            for key in [k for k in list(_state) if k[0] == device['id'] and k[1].startswith('zone:') and k[1] not in current]:
+                _state.pop(key, None)
     except Exception as e:
         print(f"Alarm evaluatie fout ({device.get('name')}): {e}")
 

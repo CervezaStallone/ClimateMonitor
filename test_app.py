@@ -710,6 +710,22 @@ def test_draw_mode_pauses_live_mollier_and_keeps_path():
     assert drawing is False and bar == {'display': 'none'}
 
 
+def test_zone_alarm_does_not_stick_after_zones_are_saved_again():
+    """Opslaan geeft zones nieuwe id's (bv. na tekenen): een alarm op een oude zone mag niet blijven hangen."""
+    import zones
+    names = setup_alerts([])
+    assert settings.save({'alert_delay_seconds': 0}) == {}
+    danger = {'scope': 0, 'name': 'Schimmel', 'color': 'red', 'mode': 'keep_outside', 'level': 'alarm',
+              'temp_min': 10, 'temp_max': 30, 'rh_min': 80, 'rh_max': 100, 'enabled': 'true'}
+    assert zones.save([danger]) == {}
+    cel = names['Koelcel']
+    alerts.evaluate(cel, {'temperature': 20.0, 'humidity': 85.0}, now=1)
+    assert alerts.device_status(cel['id'])[0] == 'alarm'
+    assert zones.save([{**danger, 'mode': 'none'}]) == {}                       # nieuwe id, geen alarm meer
+    alerts.evaluate(cel, {'temperature': 20.0, 'humidity': 85.0}, now=2)
+    assert alerts.device_status(cel['id']) == ('ok', {})
+
+
 def test_board_shows_zone_alarm():
     import json
     import callbacks
