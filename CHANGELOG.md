@@ -2,7 +2,7 @@
 
 All notable changes to Climate Monitor. Older versions: see the [GitHub releases](https://github.com/CervezaStallone/ClimateMonitor/releases).
 
-## [Unreleased]
+## [2.3.1-beta] - 2026-11-03 (pre-release)
 
 ### Added
 - **Home Assistant discovery** (Settings → MQTT): every sensor shows up in Home Assistant as a device with the sensor's name and manufacturer BRDC, with an entity per quantity.
