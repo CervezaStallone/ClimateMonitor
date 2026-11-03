@@ -2,7 +2,8 @@
 import json
 import time
 from urllib.parse import quote
-from zoneinfo import available_timezones
+from datetime import datetime
+from zoneinfo import ZoneInfo, available_timezones
 
 from dash import ALL, Input, Output, State, callback_context, dcc, html, no_update
 
@@ -12,11 +13,13 @@ import devices
 import layout
 import modbus_reader
 import mqtt_publisher
+import report
 import settings
 import zones
 from translations import LANGUAGE_NAMES, TRANSLATIONS
 
-SECTIONS = ['display', 'modbus', 'notify', 'alerts', 'wood', 'mqtt', 'regional', 'data', 'server', 'security']
+SECTIONS = ['display', 'modbus', 'notify', 'alerts', 'wood', 'mqtt', 'reports', 'regional', 'data', 'server', 'security']
+DOWNLOAD_PERIODS = ['this_week', 'last_week', 'this_month', 'last_month']
 
 # Bussen, sensoren en grenswaarden: één regel gewone formuliervelden per item (geen DataTable: daar verplaatsen
 # de pijltjestoetsen de cel in plaats van de cursor en zijn de keuzelijsten in cellen onbetrouwbaar)
@@ -40,7 +43,7 @@ def _t(lang):
 
 
 def _options(key, t):
-    if key == 'default_language':
+    if key in ('default_language', 'report_language'):
         return [{'label': LANGUAGE_NAMES[code], 'value': code} for code in settings.LANGUAGES]
     if key == 'timezone':
         return _TIMEZONES
@@ -249,6 +252,19 @@ def _mqtt_section(t):
     ]
 
 
+def _reports_section(t):
+    return [html.Div([
+        html.Label(t['lbl_download_report'], className='field-label'),
+        html.Div(className='draw-actions', children=[
+            dcc.Dropdown(id='report-download-period', value='last_month', clearable=False, searchable=False,
+                         options=[{'label': t[f'opt_download_{p}'], 'value': p} for p in DOWNLOAD_PERIODS],
+                         style={'minWidth': '200px'}),
+            html.Button(t['btn_download_report'], id='report-download-btn', n_clicks=0, className='btn btn-small'),
+        ]),
+        dcc.Loading(dcc.Download(id='report-download'), type='dot'),
+    ], className='field')]
+
+
 def mqtt_status_text(t):
     state = mqtt_publisher.status
     if not settings.get('mqtt_enabled'):
@@ -313,7 +329,7 @@ def device_status_list(t):
 def _section(name, values, t):
     keys = [k for k, spec in settings.SCHEMA.items() if spec['section'] == name]
     extra = {'modbus': _modbus_section, 'notify': _notify_section, 'alerts': _alerts_section,
-             'mqtt': _mqtt_section}.get(name, lambda t: [])(t)
+             'mqtt': _mqtt_section, 'reports': _reports_section}.get(name, lambda t: [])(t)
     if name == 'data':
         extra.append(html.Div([
             html.Label(t['lbl_database_file'], className='field-label'),
@@ -575,6 +591,22 @@ def register_settings_callbacks(app):
         if tab != 'settings' or n % 3 or not auth.is_logged_in():
             return no_update
         return device_status_list(_t(lang))
+
+    @app.callback(
+        Output('report-download', 'data'),
+        Input('report-download-btn', 'n_clicks'),
+        [State('report-download-period', 'value'),
+         State('selected-language', 'data')],
+        prevent_initial_call=True
+    )
+    def download_report(n_clicks, choice, lang):
+        """PDF van deze/vorige week of maand, in de taal van het rapport (alleen ingelogd)."""
+        if not auth.is_logged_in() or choice not in DOWNLOAD_PERIODS:
+            return no_update
+        which, kind = choice.split('_')
+        start, end = report.period(kind, datetime.now(ZoneInfo(settings.get('timezone'))), current=which == 'this')
+        language = settings.get('report_language')
+        return dcc.send_bytes(report.build_pdf(start, end, language), report.filename(start, language))
 
     @app.callback(
         Output('scan-result', 'children'),

@@ -80,6 +80,9 @@ SCHEMA = {
     'mqtt_qos': {'type': int, 'default': 0, 'section': 'mqtt', 'choices': [0, 1]},
     'mqtt_retain': {'type': bool, 'default': True, 'section': 'mqtt'},
     'mqtt_ha_discovery': {'type': bool, 'default': False, 'section': 'mqtt'},
+    # Rapporten
+    'report_period': {'type': str, 'default': 'off', 'section': 'reports', 'choices': ['off', 'week', 'month']},
+    'report_language': {'type': str, 'default': 'en', 'section': 'reports', 'choices': LANGUAGES},
 }
 
 # Een opgeslagen secret gaat alleen naar dezelfde bestemming. Wijzigt een van deze velden, dan moet
@@ -97,7 +100,7 @@ REQUIRED_WHEN = {
 }
 
 # Interne waarden: nooit naar de browser
-INTERNAL_KEYS = ('admin_password_hash', 'secret_key')
+INTERNAL_KEYS = ('admin_password_hash', 'secret_key', 'report_last_sent')
 
 _EMAIL_RE = re.compile(r'^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$')
 _TELEGRAM_TOKEN_RE = re.compile(r'^\d{5,}:[A-Za-z0-9_-]{30,}$')

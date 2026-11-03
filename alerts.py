@@ -377,12 +377,15 @@ def send_telegram(text, config):
         raise RuntimeError(body.get('description') or f'HTTP {response.status_code}')
 
 
-def send_email(text, config):
+def send_email(text, config, attachment=None):
+    """attachment: optioneel (bestandsnaam, PDF bytes)."""
     message = EmailMessage()
     message['Subject'] = f"XY-MD02: {text.splitlines()[0][:100]}"
     message['From'] = config['smtp_from']
     message['To'] = config['smtp_to']
     message.set_content(text)
+    if attachment:
+        message.add_attachment(attachment[1], maintype='application', subtype='pdf', filename=attachment[0])
     context = ssl.create_default_context()
     if config['smtp_security'] == 'ssl':
         server = smtplib.SMTP_SSL(config['smtp_host'], config['smtp_port'], timeout=SEND_TIMEOUT, context=context)

@@ -39,6 +39,7 @@ A real-time climate monitoring dashboard for Modbus RTU temperature and humidity
   - [Multiple buses and sensors](#multiple-buses-and-sensors)
   - [Notifications](#notifications)
   - [MQTT](#mqtt)
+  - [Reports](#reports)
 - [Adding a New Language](#adding-a-new-language)
 - [Comfort Score & Humidex](#comfort-score--humidex)
 - [Mollier Diagram (Psychrometric Chart)](#mollier-diagram-psychrometric-chart)
@@ -83,6 +84,7 @@ A real-time climate monitoring dashboard for Modbus RTU temperature and humidity
 - **Configurable in the browser**: Settings tab for buses, sensors, timezone, language, data retention, server and security
 - **Notifications**: Telegram and/or e-mail when limits are exceeded (global or per sensor, at warning or alarm level) or a zone is left or entered, when values are back to normal and when a sensor goes offline
 - **MQTT**: publish the values of every sensor to an MQTT broker (Home Assistant, Node-RED, SCADA), with optional Home Assistant discovery
+- **Reports**: weekly or monthly PDF with the wood moisture per sensor and a min/max table, e-mailed and downloadable
 - **Login protection**: Admin password for the Settings tab, optionally for the whole app
 
 ### Screenshots
@@ -111,6 +113,10 @@ A real-time climate monitoring dashboard for Modbus RTU temperature and humidity
 
 ![Zone editor](img/zone-editor.png)
 *Zone editor: drag the corners, drag a dot in the middle of a side to add a corner.*
+
+#### Report
+![Moisture report](img/report.png)
+*Monthly report (Spanish, example data): daily wood moisture per sensor and the min/max table with the wood moisture coloured by level.*
 
 #### Historical replay
 ![Historical range](img/history-range.png)
@@ -287,6 +293,7 @@ ClimateMonitor/
 ├── psychrometric.py            # Mollier diagram generation
 ├── wood.py                     # Wood equilibrium moisture: formula, response time, diagram
 ├── zones.py                    # Zones (areas of temperature × humidity) with colour and alarm
+├── report.py                   # Weekly/monthly PDF report, sent by e-mail
 ├── callbacks.py                # Dashboard callbacks (board/meters, chart, Mollier, replay)
 ├── settings.py                 # Settings stored in the database, validation, password reset
 ├── settings_ui.py              # Settings tab
@@ -357,6 +364,7 @@ Open the **Settings** tab in the web app. The first visit asks you to create an 
 | Modbus buses and sensors | Poll interval, buses (RS-485 interfaces), sensors (Modbus slaves) with data type (int16, uint16, int32, uint32, float32), byte order (ABCD, DCBA, BADC, CDAB) and a temperature and humidity correction for calibration |
 | Notifications: channels | Telegram bot token and chat ID, SMTP server, sender and recipients, test buttons |
 | MQTT | Broker, port, TLS, login, client ID, topic prefix, publish interval, QoS, retain, Home Assistant discovery, test button |
+| Reports | Report by e-mail (off / weekly / monthly), report language, download |
 | Notifications: limits | Limits per quantity (all sensors or one sensor) at warning or alarm level, zones (desired or danger zone, colour, per sensor), alarm delay, hysteresis, recovery and offline alerts |
 | Wood moisture | Correction for the wood species (% points), response time of the wood (hours), hysteresis |
 | Region and language | Timezone, default language |
@@ -448,6 +456,23 @@ with one entity per quantity (temperature, humidity, dew point, absolute humidit
 when it is on). The configs are retained on `homeassistant/sensor/<prefix>-<id>/<quantity>/config`;
 entities go offline with `<prefix>/status`. Renaming a sensor keeps its entities; removing a sensor
 or turning discovery off removes them from Home Assistant.
+
+#### Reports
+
+Settings → Reports makes a PDF report of all sensors in one document:
+
+- the wood moisture per sensor per day (daily average) in a chart;
+- a table with the minimum and maximum temperature, humidity and wood moisture per sensor. Wood moisture
+  above 16 % is yellow, above 18 % orange and above 20 % red.
+
+The wood moisture uses the same correction and response time as the board and the alarms, calculated
+from hourly averages.
+
+*Report by e-mail*: **weekly** (Monday from 07:00, about the previous Monday–Sunday) or **monthly** (the
+1st from 07:00, about the previous month), as a PDF attachment to the recipients under Notifications
+(e-mail must be on). If the app was off at that time, the report is sent as soon as it runs again; a
+failed send is retried every hour and shown in the notification log. *Report language* sets the
+language of the report. *Download report* gives the PDF of this or last week or month directly.
 
 #### Modbus values in `.env` (first start only)
 
@@ -696,6 +721,7 @@ pip freeze > requirements.txt
 - **psychrometric.py**: Mollier diagram
 - **wood.py**: wood equilibrium moisture
 - **zones.py**: zones, point-in-zone check
+- **report.py**: PDF report and its e-mail schedule
 - **translations.py**: texts in NL, EN, DE, FR, ES
 - **test_app.py**: automated tests
 

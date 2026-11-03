@@ -7,6 +7,7 @@ import alerts
 import auth
 import devices
 import mqtt_publisher
+import report
 import settings
 from database import init_database, cleanup_old_data
 from modbus_reader import start_modbus_thread
@@ -30,6 +31,7 @@ if settings.get('data_retention_days') > 0:
 # Start meldingen en Modbus threads
 alerts.start()
 mqtt_publisher.start()
+report.start()
 modbus_thread = start_modbus_thread()
 
 # Dash app initialisatie
