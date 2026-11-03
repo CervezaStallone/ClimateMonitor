@@ -2,14 +2,18 @@
 
 All notable changes to Climate Monitor. Older versions: see the [GitHub releases](https://github.com/CervezaStallone/ClimateMonitor/releases).
 
-## [2.3.1-beta] - 2026-11-03 (pre-release)
+## [2.3.1-beta2] - 2026-11-03 (pre-release)
 
 ### Added
-- **Home Assistant discovery** (Settings → MQTT): every sensor shows up in Home Assistant as a device with the sensor's name and manufacturer BRDC, with an entity per quantity.
 - **Reports** (Settings → Reports): weekly or monthly PDF with the daily wood moisture per sensor and a table with min/max temperature, humidity and wood moisture (yellow above 16 %, orange above 18 %, red above 20 %). Sent by e-mail to the notification recipients and downloadable; language selectable.
 
 ### Changed
 - New dependency: matplotlib (PDF report). `start.sh` installs it automatically; otherwise run `pip install -r requirements.txt`.
+
+## [2.3.1-beta] - 2026-11-03 (pre-release)
+
+### Added
+- **Home Assistant discovery** (Settings → MQTT): every sensor shows up in Home Assistant as a device with the sensor's name and manufacturer BRDC, with an entity per quantity.
 
 ## [2.3.0] - 2026-11-02
 
