@@ -4,6 +4,7 @@ Topics (prefix instelbaar, standaard 'xy-md02'):
   <prefix>/status                 online / offline (retained, offline via last will)
   <prefix>/<sensor>/state         JSON met alle waarden
   <prefix>/<sensor>/<grootheid>   losse waarde (temperature, humidity, dewpoint, absolute_humidity, wood_emc)
+  homeassistant/sensor/<prefix>-<id>/<grootheid>/config   Home Assistant discovery (optioneel, retained)
 
 De poller schrijft alleen de laatste waarden in het geheugen; een eigen thread verbindt, verbindt
 opnieuw na wijzigingen in Settings of uitval, en publiceert elk interval.
@@ -25,6 +26,16 @@ METRICS = ('temperature', 'humidity', 'dewpoint', 'absolute_humidity', 'wood_emc
 CONFIG_KEYS = ('mqtt_enabled', 'mqtt_host', 'mqtt_port', 'mqtt_tls', 'mqtt_username', 'mqtt_password',
                'mqtt_client_id', 'mqtt_topic_prefix', 'mqtt_qos', 'mqtt_retain')
 CONNECT_TIMEOUT = 10
+DISCOVERY_PREFIX = 'homeassistant'   # ponytail: vast, instelbaar maken als iemand een andere discovery prefix gebruikt
+MANUFACTURER = 'BRDC'
+# grootheid -> (naam, device_class, eenheid, icoon)
+HA_SENSORS = {
+    'temperature': ('Temperature', 'temperature', '°C', None),
+    'humidity': ('Humidity', 'humidity', '%', None),
+    'dewpoint': ('Dew point', 'temperature', '°C', 'mdi:water-thermometer'),
+    'absolute_humidity': ('Absolute humidity', None, 'g/m³', 'mdi:water'),
+    'wood_emc': ('Wood moisture', None, '%', 'mdi:tree'),
+}
 
 _lock = threading.Lock()
 _latest = {}        # device_id -> {'name', 'values', 'ts', 'published': bool}
@@ -106,6 +117,7 @@ class Publisher(threading.Thread):
         self.client = None
         self.active = None
         self.last_publish = 0
+        self.announced = {}   # discovery topic -> payload dat al op de broker staat
 
     def run(self):
         while True:
@@ -152,6 +164,7 @@ class Publisher(threading.Thread):
             status.update(connected=False, error=str(reason_code))
             return
         status.update(connected=True, error=None)
+        self.announced = {}   # broker kan herstart zijn: discovery opnieuw sturen
         client.publish(f"{self.active['mqtt_topic_prefix']}/status", 'online', qos=1, retain=True)
         print("✓ MQTT verbonden")
 
@@ -173,6 +186,7 @@ class Publisher(threading.Thread):
             entries = {k: dict(v) for k, v in _latest.items()}
             for entry in _latest.values():
                 entry['published'] = True
+        self.discover(prefix, entries)
         for device_id, level in topic_names(entries).items():
             entry = entries[device_id]
             if entry['published']:
@@ -185,6 +199,36 @@ class Publisher(threading.Thread):
                 self.client.publish(f'{prefix}/{level}/{metric}', str(value), qos=qos, retain=retain)
         self.last_publish = time.time()
         status['last_publish'] = self.last_publish
+
+    def discover(self, prefix, entries):
+        """Home Assistant discovery: per sensor een device (naam = sensornaam), per grootheid een entity.
+        Alleen wijzigingen sturen; verdwenen entities krijgen een lege retained config."""
+        wanted = {}
+        if settings.get('mqtt_ha_discovery'):
+            node = slug(prefix)
+            for device_id, level in topic_names(entries).items():
+                entry = entries[device_id]
+                device = {'identifiers': [f'{node}-{device_id}'], 'name': entry['name'],
+                          'manufacturer': MANUFACTURER}
+                for metric, (name, device_class, unit, icon) in HA_SENSORS.items():
+                    if metric not in entry['values']:
+                        continue
+                    config = {'name': name, 'unique_id': f'{node}-{device_id}-{metric}',
+                              'state_topic': f'{prefix}/{level}/state',
+                              'value_template': f'{{{{ value_json.{metric} }}}}',
+                              'availability_topic': f'{prefix}/status',
+                              'unit_of_measurement': unit, 'state_class': 'measurement', 'device': device}
+                    if device_class:
+                        config['device_class'] = device_class
+                    if icon:
+                        config['icon'] = icon
+                    wanted[f'{DISCOVERY_PREFIX}/sensor/{node}-{device_id}/{metric}/config'] = json.dumps(config)
+        for topic in set(self.announced) - set(wanted):
+            self.client.publish(topic, '', qos=1, retain=True)
+        for topic, payload in wanted.items():
+            if self.announced.get(topic) != payload:
+                self.client.publish(topic, payload, qos=1, retain=True)
+        self.announced = wanted
 
 
 def start():

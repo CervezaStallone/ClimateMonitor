@@ -79,6 +79,7 @@ SCHEMA = {
     'mqtt_publish_interval_seconds': {'type': int, 'default': 10, 'section': 'mqtt', 'min': 1, 'max': 3600},
     'mqtt_qos': {'type': int, 'default': 0, 'section': 'mqtt', 'choices': [0, 1]},
     'mqtt_retain': {'type': bool, 'default': True, 'section': 'mqtt'},
+    'mqtt_ha_discovery': {'type': bool, 'default': False, 'section': 'mqtt'},
 }
 
 # Een opgeslagen secret gaat alleen naar dezelfde bestemming. Wijzigt een van deze velden, dan moet

@@ -82,7 +82,7 @@ A real-time climate monitoring dashboard for Modbus RTU temperature and humidity
 - **Flexible sensors**: register data type (int16, uint16, int32, uint32, float32), byte order (ABCD, DCBA, BADC, CDAB) and a calibration correction per sensor; *Scan* finds which slave addresses answer on a bus
 - **Configurable in the browser**: Settings tab for buses, sensors, timezone, language, data retention, server and security
 - **Notifications**: Telegram and/or e-mail when limits are exceeded (global or per sensor, at warning or alarm level) or a zone is left or entered, when values are back to normal and when a sensor goes offline
-- **MQTT**: publish the values of every sensor to an MQTT broker (Home Assistant, Node-RED, SCADA)
+- **MQTT**: publish the values of every sensor to an MQTT broker (Home Assistant, Node-RED, SCADA), with optional Home Assistant discovery
 - **Login protection**: Admin password for the Settings tab, optionally for the whole app
 
 ### Screenshots
@@ -356,7 +356,7 @@ Open the **Settings** tab in the web app. The first visit asks you to create an 
 | Display | Dashboard view (Board / Meters), theme (Dark / Light), show or hide comfort, the Mollier diagram and wood moisture |
 | Modbus buses and sensors | Poll interval, buses (RS-485 interfaces), sensors (Modbus slaves) with data type (int16, uint16, int32, uint32, float32), byte order (ABCD, DCBA, BADC, CDAB) and a temperature and humidity correction for calibration |
 | Notifications: channels | Telegram bot token and chat ID, SMTP server, sender and recipients, test buttons |
-| MQTT | Broker, port, TLS, login, client ID, topic prefix, publish interval, QoS, retain, test button |
+| MQTT | Broker, port, TLS, login, client ID, topic prefix, publish interval, QoS, retain, Home Assistant discovery, test button |
 | Notifications: limits | Limits per quantity (all sensors or one sensor) at warning or alarm level, zones (desired or danger zone, colour, per sensor), alarm delay, hysteresis, recovery and offline alerts |
 | Wood moisture | Correction for the wood species (% points), response time of the wood (hours), hysteresis |
 | Region and language | Timezone, default language |
@@ -441,6 +441,13 @@ saving. With topic prefix `xy-md02` every sensor publishes, at most once per pub
 `<sensor>` is the sensor name in lower case with `-` instead of spaces (`Kas noord` → `kas-noord`);
 renaming a sensor changes its topic, `device_id` stays the same. If the broker is unreachable,
 measuring continues and the app reconnects automatically; the connection status is shown in Settings.
+
+**Home Assistant discovery**: enable *Home Assistant discovery* in Settings → MQTT and every sensor
+appears in Home Assistant (MQTT integration) as a device with the sensor's name, manufacturer BRDC,
+with one entity per quantity (temperature, humidity, dew point, absolute humidity and wood moisture
+when it is on). The configs are retained on `homeassistant/sensor/<prefix>-<id>/<quantity>/config`;
+entities go offline with `<prefix>/status`. Renaming a sensor keeps its entities; removing a sensor
+or turning discovery off removes them from Home Assistant.
 
 #### Modbus values in `.env` (first start only)
 
