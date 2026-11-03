@@ -50,6 +50,8 @@ def fresh_settings():
     alerts._mutes.clear()
     import zones
     zones._cache = None
+    import report
+    report._next_try = 0
     while not alerts._outbox.empty():
         alerts._outbox.get_nowait()
 
@@ -1544,6 +1546,244 @@ def test_layout_has_no_untranslated_dutch_text():
     for dutch in ('Laatste', 'Selecteer', 'Toepassen', 'Snelle selectie', 'Tijdstip', 'Temperatuur', 'uur', 'Maand'):
         assert dutch not in rendered, dutch
     assert 'Aplicar' in rendered and 'Selección rápida' in rendered
+
+
+def test_report_wood_levels():
+    import report
+    assert [report.level(v) for v in (12, 16, 16.1, 18, 18.5, 20, 20.1)] == \
+        ['normal', 'normal', 'yellow', 'yellow', 'orange', 'orange', 'red']
+
+
+def test_report_period_is_previous_month():
+    import report
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo('Europe/Amsterdam')
+    assert report.period('month', datetime(2026, 1, 5, 8, tzinfo=tz)) == \
+        (datetime(2025, 12, 1, tzinfo=tz), datetime(2026, 1, 1, tzinfo=tz))
+
+
+def test_report_period_is_previous_week_from_monday():
+    import report
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo('Europe/Amsterdam')
+    assert report.period('week', datetime(2026, 11, 3, 8, tzinfo=tz)) == \
+        (datetime(2026, 10, 26, tzinfo=tz), datetime(2026, 11, 2, tzinfo=tz))
+
+
+def test_report_current_period_runs_until_now():
+    import report
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo('Europe/Amsterdam')
+    now = datetime(2026, 11, 3, 8, tzinfo=tz)
+    assert report.period('month', now, current=True) == (datetime(2026, 11, 1, tzinfo=tz), now)
+
+
+def _insert_hourly(device_id, start, hours, temp, hum):
+    """Eén meting per uur in de juiste dagtabel; temp en hum zijn functies van het uur."""
+    conn = sqlite3.connect(settings.DB_FILE)
+    for h in range(hours):
+        ts = start + h * 3600
+        table = database.get_table_name(datetime.fromtimestamp(ts))
+        database.ensure_table_exists(conn.cursor(), table)
+        conn.execute(f'INSERT INTO {table} (timestamp, temperature, humidity, device_id) VALUES (?, ?, ?, ?)',
+                     (ts, temp(h), hum(h), device_id))
+    conn.commit()
+    conn.close()
+
+
+def test_report_table_has_min_max_within_the_period():
+    import report
+    from zoneinfo import ZoneInfo
+    fresh_settings()
+    database.init_database()
+    devices.save_config([bus()], [device('Kas noord')])
+    kas = devices.load_config()[1][0]['id']
+    tz = ZoneInfo('Europe/Amsterdam')
+    start, end = datetime(2026, 10, 1, tzinfo=tz), datetime(2026, 11, 1, tzinfo=tz)
+    _insert_hourly(kas, int(start.timestamp()), 744, lambda h: 15 + (h % 24) / 4, lambda h: 60 + h / 31)
+    _insert_hourly(kas, int(start.timestamp()) - 3600, 1, lambda h: 99, lambda h: 99)   # buiten de periode
+    row = report.collect(start, end)[0]
+    assert row['name'] == 'Kas noord'
+    assert (row['temp_min'], row['temp_max'], row['hum_min'], row['hum_max']) == (15, 20.75, 60, 60 + 743 / 31)
+
+
+def test_report_wood_moisture_per_day_and_min_max():
+    import report
+    import wood
+    from zoneinfo import ZoneInfo
+    fresh_settings()
+    database.init_database()
+    settings.save({'wood_response_hours': 0})                          # houtvocht = actuele waarde
+    devices.save_config([bus()], [device('Kas noord')])
+    kas = devices.load_config()[1][0]['id']
+    tz = ZoneInfo('Europe/Amsterdam')
+    start, end = datetime(2026, 10, 1, tzinfo=tz), datetime(2026, 11, 1, tzinfo=tz)
+    _insert_hourly(kas, int(start.timestamp()), 744, lambda h: 15, lambda h: 60 + h / 31)
+    row = report.collect(start, end)[0]
+    assert abs(row['wood_min'] - float(wood.value(15, 60))) < 0.01
+    assert abs(row['wood_max'] - float(wood.value(15, 60 + 743 / 31))) < 0.01
+    days = row['days']
+    assert [d.day for d, _ in days] == list(range(1, 32))
+    assert days[0][1] < days[-1][1]
+
+
+def test_report_wood_moisture_follows_the_response_time():
+    import report
+    import wood
+    from zoneinfo import ZoneInfo
+    fresh_settings()
+    database.init_database()
+    settings.save({'wood_response_hours': 24})
+    devices.save_config([bus()], [device('Kas noord')])
+    kas = devices.load_config()[1][0]['id']
+    tz = ZoneInfo('Europe/Amsterdam')
+    start, end = datetime(2026, 10, 26, tzinfo=tz), datetime(2026, 11, 2, tzinfo=tz)
+    _insert_hourly(kas, int(start.timestamp()), 168, lambda h: 20, lambda h: 95 if h == 100 else 60)
+    row = report.collect(start, end)[0]
+    assert row['hum_max'] == 95                                         # luchtwaarde wel
+    assert row['wood_max'] < float(wood.value(20, 70))                  # één uur piek nauwelijks in het hout
+
+
+def test_report_pdf_in_spanish():
+    import report
+    from zoneinfo import ZoneInfo
+    fresh_settings()
+    database.init_database()
+    devices.save_config([bus()], [device('Kas noord'), device('Hal', slave_id=2)])
+    kas, hal = (d['id'] for d in devices.load_config()[1])
+    tz = ZoneInfo('Europe/Amsterdam')
+    start, end = datetime(2026, 10, 1, tzinfo=tz), datetime(2026, 11, 1, tzinfo=tz)
+    _insert_hourly(kas, int(start.timestamp()), 744, lambda h: 15, lambda h: 70 + h / 31)
+    _insert_hourly(hal, int(start.timestamp()), 744, lambda h: 20, lambda h: 50)
+    pdf = report.build_pdf(start, end, 'es')
+    assert pdf.startswith(b'%PDF')
+    assert b'Informe automatizado estado de humedad' in pdf             # titel in de metadata
+
+
+def test_report_is_mailed_once_per_period():
+    import report
+    from zoneinfo import ZoneInfo
+    fresh_settings()
+    database.init_database()
+    assert settings.save({'report_period': 'month', 'report_language': 'es', 'smtp_enabled': True,
+                          'smtp_host': 'mail.example.com', 'smtp_from': 'a@example.com', 'smtp_to': 'b@example.com'}) == {}
+    tz = ZoneInfo('Europe/Amsterdam')
+    sent = []
+    original = alerts.send_email
+    alerts.send_email = lambda text, config, attachment=None: sent.append((text, attachment))
+    try:
+        assert not report.check(datetime(2026, 11, 1, 6, 30, tzinfo=tz))           # nog geen 07:00
+        assert report.check(datetime(2026, 11, 1, 7, 5, tzinfo=tz))
+        assert not report.check(datetime(2026, 11, 2, 9, 0, tzinfo=tz))            # al verstuurd
+    finally:
+        alerts.send_email = original
+    assert len(sent) == 1
+    text, (filename, pdf) = sent[0]
+    assert text.startswith('Informe de humedad 01-10-2026 – 31-10-2026')
+    assert filename == 'informe-2026-10-01.pdf' and pdf.startswith(b'%PDF')
+
+
+def test_report_failed_mail_is_logged_and_retried_after_an_hour():
+    import report
+    from zoneinfo import ZoneInfo
+    fresh_settings()
+    database.init_database()
+    settings.save({'report_period': 'week', 'smtp_enabled': True, 'smtp_host': 'mail.example.com',
+                   'smtp_from': 'a@example.com', 'smtp_to': 'b@example.com'})
+    tz = ZoneInfo('Europe/Amsterdam')
+    calls = []
+
+    def failing(text, config, attachment=None):
+        calls.append(text)
+        raise OSError('connection refused')
+    original = alerts.send_email
+    alerts.send_email = failing
+    alerts.log.clear()
+    try:
+        assert not report.check(datetime(2026, 11, 2, 7, 0, tzinfo=tz))
+        assert not report.check(datetime(2026, 11, 2, 7, 30, tzinfo=tz))           # nog geen uur later
+        assert not report.check(datetime(2026, 11, 2, 8, 1, tzinfo=tz))
+    finally:
+        alerts.send_email = original
+    assert len(calls) == 2
+    assert alerts.log[0]['ok'] is False and alerts.log[0]['error'] == 'connection refused'
+
+
+def test_email_can_carry_a_pdf_attachment():
+    fresh_settings()
+    config = settings.merged({'smtp_host': 'mail.example.com', 'smtp_from': 'a@example.com', 'smtp_to': 'b@example.com',
+                              'smtp_security': 'none'})
+    sent = []
+
+    class FakeSMTP:
+        def __init__(self, host, port, timeout):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def send_message(self, message):
+            sent.append(message)
+
+    original = alerts.smtplib.SMTP
+    alerts.smtplib.SMTP = FakeSMTP
+    try:
+        alerts.send_email('Informe\n\ntexto', config, ('informe-2026-10-01.pdf', b'%PDF-1.4 demo'))
+    finally:
+        alerts.smtplib.SMTP = original
+    [attachment] = list(sent[0].iter_attachments())
+    assert attachment.get_filename() == 'informe-2026-10-01.pdf'
+    assert attachment.get_content_type() == 'application/pdf' and attachment.get_content() == b'%PDF-1.4 demo'
+
+
+def test_report_download_requires_login():
+    import dash
+    import base64
+    import settings_ui
+    fresh_settings()
+    database.init_database()
+    devices.init_devices()
+    settings.save({'report_language': 'es'})
+    app = dash.Dash(__name__, suppress_callback_exceptions=True)
+    settings_ui.register_settings_callbacks(app)
+    download = next(e['callback'].__wrapped__ for e in app.callback_map.values()
+                    if getattr(e['callback'], '__wrapped__', None) and e['callback'].__wrapped__.__name__ == 'download_report')
+    original_login = auth.is_logged_in
+    try:
+        with app.server.test_request_context():
+            assert download(1, 'last_month', 'nl') is dash.no_update
+            auth.is_logged_in = lambda: True
+            result = download(1, 'last_month', 'nl')
+    finally:
+        auth.is_logged_in = original_login
+    assert result['filename'].startswith('informe-') and result['filename'].endswith('-01.pdf')
+    assert base64.b64decode(result['content']).startswith(b'%PDF')
+
+
+def test_report_thread_keeps_checking_after_errors():
+    import report
+    calls = []
+    original_check, original_sleep = report.check, report.time.sleep
+
+    def check():
+        calls.append(1)
+        raise sqlite3.OperationalError('database is locked')
+
+    def sleep(seconds):
+        assert seconds == 60
+        if len(calls) >= 2:
+            raise SystemExit
+    report.check, report.time.sleep = check, sleep
+    try:
+        report._loop()
+    except SystemExit:
+        pass
+    finally:
+        report.check, report.time.sleep = original_check, original_sleep
+    assert len(calls) == 2
 
 
 if __name__ == '__main__':
